@@ -2,7 +2,7 @@ import dspy
 from src.program.counting_rm import CountingRM
 from src.program.phantomwiki_module import PhantomWikiReAct
 
-COLBERT_URL = "https://julianghadially--colbert-server-colbertservice-serve.modal.run/api/search"
+COLBERT_URL = "https://julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run/api/search"
 
 
 class PhantomWikiReActPipeline(dspy.Module):

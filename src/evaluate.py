@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 
 import dspy
-from src.program.pipeline import PhantomWikiReActPipeline
+from src.program.phantomwiki_pipeline import PhantomWikiReActPipeline
 from src.metric.metric import phantomwiki_f1
+
+dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini"))
 
 
 def evaluate(split: str = "val", max_questions: int | None = None) -> dict:

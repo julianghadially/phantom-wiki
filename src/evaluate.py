@@ -4,10 +4,13 @@ from pathlib import Path
 
 import dspy
 from src.program.phantomwiki_pipeline import PhantomWikiReActPipeline
+from src.program.baseline_rag.baseline_pipeline import BaselineRAGPipeline
+from src.program.baseline_rlm.rlm_pipeline import RLMPipeline
 from src.metric.metric import phantomwiki_f1
 
 dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini", cache=False))
 
+selected_pipeline = RLMPipeline
 
 def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
     split_file = {
@@ -23,7 +26,7 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
     if max_questions:
         questions = questions[:max_questions]
 
-    pipeline = PhantomWikiReActPipeline()
+    pipeline = selected_pipeline()
 
     scores = []
     by_difficulty = {}

@@ -6,7 +6,7 @@ import dspy
 from src.program.phantomwiki_pipeline import PhantomWikiReActPipeline
 from src.metric.metric import phantomwiki_f1
 
-dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini"))
+dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini", cache=False))
 
 
 def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
@@ -29,10 +29,15 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
     by_difficulty = {}
 
     for q in questions:
+        print("--------------------------------")
+        print(f"Question: {q['question']}")
         result = pipeline(question=q["question"])
         gold = dspy.Example(answer=q["answer"]).with_inputs("question")
         score = phantomwiki_f1(gold, result)
         scores.append(score)
+        print(f"Result: {result.answer}")
+        print(f"Answer: {q['answer']}")
+        print(f"Score: {score}")
 
         d = q["difficulty"]
         by_difficulty.setdefault(d, []).append(score)

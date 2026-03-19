@@ -27,7 +27,7 @@ class PhantomWikiRLM(dspy.Module):
         return "\n\n---\n\n".join(results.passages)
 
     def forward(self, question):
-        print(f"Question: {q['question']}")
+        print(f"Question: {question}")
         result = self.rlm(question=question)
         print(f"Result: {result.answer}")
         return dspy.Prediction(answer=result.answer)

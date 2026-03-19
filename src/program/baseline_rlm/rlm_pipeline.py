@@ -1,6 +1,6 @@
 import dspy
 from src.program.counting_rm import CountingRM
-from src.program.rlm.rlm_module import PhantomWikiRLM
+from src.program.baseline_rlm.rlm_module import PhantomWikiRLM
 
 COLBERT_URL = "https://julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run/api/search"
 

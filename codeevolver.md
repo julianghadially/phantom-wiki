@@ -9,7 +9,13 @@ This system is a multi-hop question-answering pipeline over the PhantomWiki corp
 ### Key Modules
 
 **`PhantomWikiReActPipeline`** (entry point, `src/program/phantomwiki_pipeline.py`)
-Top-level `dspy.Module` that wires together retrieval and reasoning. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever (pointed at a hosted Modal endpoint) and a `PhantomWikiReAct` reasoning module. The `forward` method sets the wrapped retriever as the active DSPy context retriever, then delegates to the inner program.
+Top-level `dspy.Module` implementing a multi-strategy fan-out architecture. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever, a `PhantomWikiReAct` reasoning module, a `ChainOfThought(GenerateSearchStrategies)` module for generating diverse search strategies, and a `ChainOfThought(MergeAnswers)` module for deduplicating results. The `forward` method first generates 3 diverse search strategies for the question, then runs `PhantomWikiReAct` for each strategy plus the original question (4 total runs) within the retrieval context, collects all answers, and merges/deduplicates them via `MergeAnswers`.
+
+**`GenerateSearchStrategies`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for generating 3 diverse, independent search strategies/rephrased questions from the original question to ensure exhaustive answer coverage across different starting points in the knowledge graph.
+
+**`MergeAnswers`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for merging and deduplicating candidate answers collected across multiple search strategies into a single comprehensive list of valid, distinct answers.
 
 **`CountingRM`** (`src/program/counting_rm.py`)
 A thin instrumentation wrapper around any DSPy retriever. It proxies all retrieval calls to the underlying model while incrementing a `call_count` counter, enabling retrieval-usage diagnostics without altering retrieval behavior.
@@ -19,9 +25,11 @@ Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> ans
 
 ### Data Flow
 1. **Input**: A `question` string is passed to `PhantomWikiReActPipeline.forward`.
-2. **Context setup**: `CountingRM(ColBERTv2)` is injected as the active retriever via `dspy.context`.
-3. **ReAct loop**: `PhantomWikiReAct` runs up to 50 think-act cycles. Each `search_wiki` action queries ColBERTv2 through `CountingRM`, retrieving 7 passages per call.
-4. **Output**: The ReAct loop terminates with `answer: list[str]`, wrapped in a `dspy.Prediction`.
+2. **Strategy generation**: `GenerateSearchStrategies` (via `ChainOfThought`) produces 3 diverse search strategies/rephrased questions.
+3. **Fan-out execution**: For each of the 3 strategies plus the original question (4 total), `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 7 passages.
+4. **Answer collection**: All `answer` lists from the 4 runs are concatenated into `all_answers`.
+5. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.
+6. **Output**: A `dspy.Prediction(answer=...)` with the merged, deduplicated answer list.
 
 ### Metric Being Optimized
 `phantomwiki_f1_feedback` computes token-set F1 between the predicted answer list and the gold answer list (both normalized to lowercase). It returns a `ScoreWithFeedback` object containing the numeric F1 score (0–1) and a detailed textual breakdown of correct, missed, and extra answers, enabling GEPA's feedback-driven prompt optimization.

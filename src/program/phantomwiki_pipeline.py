@@ -20,12 +20,20 @@ class MergeAnswers(dspy.Signature):
     answer: list[str] = dspy.OutputField(desc="deduplicated list of all valid, distinct answers to the question")
 
 
+class DecomposeToSteps(dspy.Signature):
+    """Decompose a complex multi-hop question into an ordered list of simpler sub-questions that must be answered sequentially, where each step can build on answers from prior steps."""
+
+    question: str = dspy.InputField()
+    steps: list[str] = dspy.OutputField(desc="ordered list of simpler sub-questions; answers to earlier steps serve as context for later steps")
+
+
 class PhantomWikiReActPipeline(dspy.Module):
     def __init__(self):
         self.rm = CountingRM(dspy.ColBERTv2(url=COLBERT_URL))
         self.program = PhantomWikiReAct()
         self.strategy_generator = dspy.ChainOfThought(GenerateSearchStrategies)
         self.answer_merger = dspy.ChainOfThought(MergeAnswers)
+        self.decomposer = dspy.ChainOfThought(DecomposeToSteps)
 
     def forward(self, question):
         strategies_result = self.strategy_generator(question=question)
@@ -38,6 +46,18 @@ class PhantomWikiReActPipeline(dspy.Module):
                 all_answers.extend(result.answer)
             original_result = self.program(question=question)
             all_answers.extend(original_result.answer)
+
+            decomposed = self.decomposer(question=question)
+            steps = decomposed.steps
+            context = ""
+            for step in steps:
+                if context:
+                    contextualized_step = f"{step} (Prior answers: {context})"
+                else:
+                    contextualized_step = step
+                step_result = self.program(question=contextualized_step)
+                all_answers.extend(step_result.answer)
+                context = ", ".join(step_result.answer) if step_result.answer else context
 
         merged = self.answer_merger(question=question, candidate_answers=all_answers)
         return dspy.Prediction(answer=merged.answer)

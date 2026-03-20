@@ -24,12 +24,12 @@ Signature for decomposing a complex multi-hop question into an ordered list of s
 A thin instrumentation wrapper around any DSPy retriever. It proxies all retrieval calls to the underlying model while incrementing a `call_count` counter, enabling retrieval-usage diagnostics without altering retrieval behavior.
 
 **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`)
-Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> answer: list[str]` with up to 50 reasoning iterations. Its single registered tool, `search_wiki`, invokes `dspy.Retrieve(k=7)` to fetch the top-7 passages from the PhantomWiki corpus for a given query and returns them as a newline-separated string for the LLM to reason over.
+Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> answer: list[str]` with up to 50 reasoning iterations. Its single registered tool, `search_wiki`, invokes `dspy.Retrieve(k=20)` to fetch the top-20 passages from the PhantomWiki corpus for a given query and returns them as a newline-separated string for the LLM to reason over.
 
 ### Data Flow
 1. **Input**: A `question` string is passed to `PhantomWikiReActPipeline.forward`.
 2. **Strategy generation**: `GenerateSearchStrategies` (via `ChainOfThought`) produces 3 diverse search strategies/rephrased questions.
-3. **Fan-out execution**: For each of the 3 strategies plus the original question (4 total), `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 7 passages.
+3. **Fan-out execution**: For each of the 3 strategies plus the original question (4 total), `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 20 passages.
 4. **Sequential decomposition**: Still inside `dspy.context(rm=self.rm)`, `DecomposeToSteps` decomposes the question into an ordered list of sub-questions. Each sub-question is answered sequentially by `PhantomWikiReAct`, with prior answers accumulated and prepended as context (`"(Prior answers: ...)"`) to each subsequent step. Results extend `all_answers`.
 5. **Answer collection**: All `answer` lists from the fan-out runs and sequential steps are concatenated into `all_answers`.
 6. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.

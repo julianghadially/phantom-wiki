@@ -3,7 +3,7 @@ import dspy
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
-        self.retrieve = dspy.Retrieve(k=7)
+        self.retrieve = dspy.Retrieve(k=20)
         self.react = dspy.ReAct(
             signature="question -> answer: list[str]",
             tools=[self.search_wiki],

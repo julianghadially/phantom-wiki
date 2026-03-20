@@ -9,13 +9,19 @@ This system is a multi-hop question-answering pipeline over the PhantomWiki corp
 ### Key Modules
 
 **`PhantomWikiReActPipeline`** (entry point, `src/program/phantomwiki_pipeline.py`)
-Top-level `dspy.Module` implementing a multi-strategy fan-out architecture. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever, a `PhantomWikiReAct` reasoning module, a `ChainOfThought(GenerateSearchStrategies)` module for generating diverse search strategies, and a `ChainOfThought(MergeAnswers)` module for deduplicating results. The `forward` method first generates 3 diverse search strategies for the question, then runs `PhantomWikiReAct` for each strategy plus the original question (4 total runs) within the retrieval context, collects all answers, and merges/deduplicates them via `MergeAnswers`.
+Top-level `dspy.Module` implementing a multi-strategy fan-out architecture with a persistent cross-run knowledge scratchpad. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever, a `PhantomWikiReAct` reasoning module, a `ChainOfThought(GenerateSearchStrategies)` module for generating diverse search strategies, a `ChainOfThought(MergeAnswers)` module for deduplicating results, a `ChainOfThought(ExtractKnowledge)` module for extracting entity-relationship facts after each ReAct run, and a `ChainOfThought(EnrichQuestion)` module for augmenting subsequent strategy queries with accumulated facts. The `forward` method first generates 3 diverse search strategies for the question, then runs `PhantomWikiReAct` for each strategy plus the original question (4 total runs) within the retrieval context. A `scratchpad` list accumulates entity facts across runs: after each run, `ExtractKnowledge` extracts facts; before each subsequent run, `EnrichQuestion` enriches the strategy with those facts, enabling later runs to build on intermediate discoveries for deep multi-hop and aggregation questions.
 
 **`GenerateSearchStrategies`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
 Signature for generating 3 diverse, independent search strategies/rephrased questions from the original question to ensure exhaustive answer coverage across different starting points in the knowledge graph.
 
 **`MergeAnswers`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
 Signature for merging and deduplicating candidate answers collected across multiple search strategies into a single comprehensive list of valid, distinct answers.
+
+**`ExtractKnowledge`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for extracting structured entity-relationship facts from a ReAct run's results. Takes `question`, `strategy`, and `react_answer: list[str]` as inputs and outputs `entity_facts: list[str]`, a structured list of discovered facts about named entities and their relationships.
+
+**`EnrichQuestion`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for augmenting a search strategy question with accumulated facts from prior runs. Takes `question: str` and `accumulated_facts: list[str]` as inputs and outputs `enriched_question: str`, enabling subsequent ReAct runs to leverage intermediate discoveries rather than starting from scratch.
 
 **`CountingRM`** (`src/program/counting_rm.py`)
 A thin instrumentation wrapper around any DSPy retriever. It proxies all retrieval calls to the underlying model while incrementing a `call_count` counter, enabling retrieval-usage diagnostics without altering retrieval behavior.
@@ -26,7 +32,7 @@ Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> ans
 ### Data Flow
 1. **Input**: A `question` string is passed to `PhantomWikiReActPipeline.forward`.
 2. **Strategy generation**: `GenerateSearchStrategies` (via `ChainOfThought`) produces 3 diverse search strategies/rephrased questions.
-3. **Fan-out execution**: For each of the 3 strategies plus the original question (4 total), `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 7 passages.
+3. **Fan-out execution with knowledge accumulation**: For each of the 3 strategies, `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 7 passages. After the first run, a `scratchpad` list is populated with facts via `ExtractKnowledge`; before each subsequent strategy run, `EnrichQuestion` enriches the strategy with accumulated scratchpad facts. Finally, the original question is also enriched with the full scratchpad before its own ReAct run.
 4. **Answer collection**: All `answer` lists from the 4 runs are concatenated into `all_answers`.
 5. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.
 6. **Output**: A `dspy.Prediction(answer=...)` with the merged, deduplicated answer list.

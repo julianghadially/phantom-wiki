@@ -4,24 +4,27 @@ METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 ## Architecture Summary
 
 ### High-Level Purpose
-This system is a multi-hop question-answering pipeline over the PhantomWiki corpus. Given a natural-language question, it iteratively retrieves relevant passages and reasons over them to produce one or more answers. It is optimized using the GEPA framework (DSPy) with an F1-based feedback metric.
+This system is a multi-hop question-answering pipeline over the PhantomWiki corpus. Given a natural-language question, it sequentially decomposes it into simpler sub-questions, resolves each one in order (with each answer feeding into the next), and then runs a final enriched pass to produce a comprehensive answer. It is optimized using the GEPA framework (DSPy) with an F1-based feedback metric.
 
 ### Key Modules
 
 **`PhantomWikiReActPipeline`** (entry point, `src/program/phantomwiki_pipeline.py`)
-Top-level `dspy.Module` implementing a multi-strategy fan-out architecture with a persistent cross-run knowledge scratchpad. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever, a `PhantomWikiReAct` reasoning module, a `ChainOfThought(GenerateSearchStrategies)` module for generating diverse search strategies, a `ChainOfThought(MergeAnswers)` module for deduplicating results, a `ChainOfThought(ExtractKnowledge)` module for extracting entity-relationship facts after each ReAct run, and a `ChainOfThought(EnrichQuestion)` module for augmenting subsequent strategy queries with accumulated facts. The `forward` method first generates 3 diverse search strategies for the question, then runs `PhantomWikiReAct` for each strategy plus the original question (4 total runs) within the retrieval context. A `scratchpad` list accumulates entity facts across runs: after each run, `ExtractKnowledge` extracts facts; before each subsequent run, `EnrichQuestion` enriches the strategy with those facts, enabling later runs to build on intermediate discoveries for deep multi-hop and aggregation questions.
+Top-level `dspy.Module` implementing a sequential question decomposition pipeline. On initialization it creates a `CountingRM`-wrapped `ColBERTv2` retriever, a `PhantomWikiReAct` reasoning module, a `ChainOfThought(DecomposeQuestion)` module for breaking the question into ordered sub-questions, a `ChainOfThought(ResolveWithContext)` module for context-aware resolution, a `ChainOfThought(MergeAnswers)` module for deduplicating results, a `ChainOfThought(ExtractKnowledge)` module for extracting entity-relationship facts, and a `ChainOfThought(EnrichQuestion)` module for augmenting the final query with accumulated facts. The `forward` method first decomposes the question into 1–5 ordered single-hop sub-questions, resolves each sequentially (substituting "result from step N" placeholders with actual answers), then runs a final enriched pass on the original question, and merges all answers.
 
-**`GenerateSearchStrategies`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
-Signature for generating 3 diverse, independent search strategies/rephrased questions from the original question to ensure exhaustive answer coverage across different starting points in the knowledge graph.
+**`DecomposeQuestion`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for decomposing a complex multi-hop question into an ordered list of 1–5 simpler single-hop sub-questions. Later steps may reference "the result from step N" as a placeholder for the answer obtained at step N, enabling chained resolution.
+
+**`ResolveWithContext`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
+Signature for answering a sub-question given previously resolved context entities. Takes `sub_question: str`, `context_entities: list[str]`, and `original_question: str` as inputs and outputs `answers: list[str]`.
 
 **`MergeAnswers`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
-Signature for merging and deduplicating candidate answers collected across multiple search strategies into a single comprehensive list of valid, distinct answers.
+Signature for merging and deduplicating candidate answers collected across multiple steps into a single comprehensive list of valid, distinct answers.
 
 **`ExtractKnowledge`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
 Signature for extracting structured entity-relationship facts from a ReAct run's results. Takes `question`, `strategy`, and `react_answer: list[str]` as inputs and outputs `entity_facts: list[str]`, a structured list of discovered facts about named entities and their relationships.
 
 **`EnrichQuestion`** (DSPy Signature, `src/program/phantomwiki_pipeline.py`)
-Signature for augmenting a search strategy question with accumulated facts from prior runs. Takes `question: str` and `accumulated_facts: list[str]` as inputs and outputs `enriched_question: str`, enabling subsequent ReAct runs to leverage intermediate discoveries rather than starting from scratch.
+Signature for augmenting the original question with accumulated facts/entities from prior steps. Takes `question: str` and `accumulated_facts: list[str]` as inputs and outputs `enriched_question: str`, enabling the final ReAct run to leverage all intermediate discoveries.
 
 **`CountingRM`** (`src/program/counting_rm.py`)
 A thin instrumentation wrapper around any DSPy retriever. It proxies all retrieval calls to the underlying model while incrementing a `call_count` counter, enabling retrieval-usage diagnostics without altering retrieval behavior.
@@ -31,11 +34,12 @@ Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> ans
 
 ### Data Flow
 1. **Input**: A `question` string is passed to `PhantomWikiReActPipeline.forward`.
-2. **Strategy generation**: `GenerateSearchStrategies` (via `ChainOfThought`) produces 3 diverse search strategies/rephrased questions.
-3. **Fan-out execution with knowledge accumulation**: For each of the 3 strategies, `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Each run performs up to 50 think-act cycles, with each `search_wiki` action querying ColBERTv2 through `CountingRM` for 7 passages. After the first run, a `scratchpad` list is populated with facts via `ExtractKnowledge`; before each subsequent strategy run, `EnrichQuestion` enriches the strategy with accumulated scratchpad facts. Finally, the original question is also enriched with the full scratchpad before its own ReAct run.
-4. **Answer collection**: All `answer` lists from the 4 runs are concatenated into `all_answers`.
-5. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.
-6. **Output**: A `dspy.Prediction(answer=...)` with the merged, deduplicated answer list.
+2. **Decomposition**: `DecomposeQuestion` (via `ChainOfThought`) produces an ordered list of 1–5 simpler single-hop sub-questions, where later steps may reference "the result from step N" as a placeholder.
+3. **Sequential resolution**: For each sub-question, any "result from step N" placeholders are substituted with actual resolved entities from that step; then `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Answers are accumulated as `context_entities` for the next step.
+4. **Final enriched pass**: After all sub-questions are resolved, `EnrichQuestion` enriches the original question with all discovered entities; `PhantomWikiReAct` runs once more on the enriched question.
+5. **Answer collection**: All answers from sub-question steps and the final pass are concatenated into `all_answers`.
+6. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.
+7. **Output**: A `dspy.Prediction(answer=...)` with the merged, deduplicated answer list.
 
 ### Metric Being Optimized
 `phantomwiki_f1_feedback` computes token-set F1 between the predicted answer list and the gold answer list (both normalized to lowercase). It returns a `ScoreWithFeedback` object containing the numeric F1 score (0–1) and a detailed textual breakdown of correct, missed, and extra answers, enabling GEPA's feedback-driven prompt optimization.

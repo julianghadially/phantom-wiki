@@ -57,13 +57,13 @@ class PhantomWikiReActPipeline(dspy.Module):
         self.knowledge_extractor = dspy.ChainOfThought(ExtractKnowledge)
         self.question_enricher = dspy.ChainOfThought(EnrichQuestion)
 
-    def _substitute_placeholders(self, sub_question: str, context_entities: list[str]) -> str:
+    def _substitute_placeholders(self, sub_question: str, step_results: list[list[str]]) -> str:
         """Replace 'the result from step N' placeholders with actual resolved entities."""
         def replace_match(m):
             step_num = int(m.group(1))
             idx = step_num - 1
-            if 0 <= idx < len(context_entities):
-                return context_entities[idx]
+            if 0 <= idx < len(step_results):
+                return ", ".join(step_results[idx])
             return m.group(0)
 
         return re.sub(r'the result from step (\d+)', replace_match, sub_question, flags=re.IGNORECASE)
@@ -75,18 +75,20 @@ class PhantomWikiReActPipeline(dspy.Module):
 
         all_answers = []
         context_entities: list[str] = []
+        step_results: list[list[str]] = []
 
         # Step 2: Resolve each sub-question sequentially
         with dspy.context(rm=self.rm):
             for i, sub_q in enumerate(sub_questions):
                 # Substitute any "result from step N" placeholders
-                enriched_sub_q = self._substitute_placeholders(sub_q, context_entities)
+                enriched_sub_q = self._substitute_placeholders(sub_q, step_results)
 
                 # Run the ReAct program on this sub-question
                 result = self.program(question=enriched_sub_q)
                 step_answers = result.answer if result.answer else []
 
                 all_answers.extend(step_answers)
+                step_results.append(step_answers)
 
                 # Accumulate answers as context for next steps
                 # Use the most relevant answer(s) as context entities

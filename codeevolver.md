@@ -35,7 +35,7 @@ Core reasoning module built on `dspy.ReAct`. Uses the signature `question -> ans
 ### Data Flow
 1. **Input**: A `question` string is passed to `PhantomWikiReActPipeline.forward`.
 2. **Decomposition**: `DecomposeQuestion` (via `ChainOfThought`) produces an ordered list of 1–5 simpler single-hop sub-questions, where later steps may reference "the result from step N" as a placeholder.
-3. **Sequential resolution**: For each sub-question, any "result from step N" placeholders are substituted with actual resolved entities from that step; then `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Answers are accumulated as `context_entities` for the next step.
+3. **Sequential resolution**: For each sub-question, any "result from step N" placeholders are substituted with all answers from that step (joined as a comma-separated string via `step_results`, a `list[list[str]]` indexed by step); then `PhantomWikiReAct` runs inside a `dspy.context(rm=self.rm)` block. Answers are also accumulated as the flat `context_entities` list for the enrichment step.
 4. **Final enriched pass**: After all sub-questions are resolved, `EnrichQuestion` enriches the original question with all discovered entities; `PhantomWikiReAct` runs once more on the enriched question.
 5. **Answer collection**: All answers from sub-question steps and the final pass are concatenated into `all_answers`.
 6. **Merge & deduplicate**: `MergeAnswers` (via `ChainOfThought`) deduplicates and filters `all_answers` into a final answer list.

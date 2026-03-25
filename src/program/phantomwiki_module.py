@@ -1,4 +1,5 @@
 import dspy
+from typing import List
 
 
 class ExhaustiveMultiHopQA(dspy.Signature):
@@ -26,6 +27,12 @@ class ExhaustiveMultiHopQA(dspy.Signature):
     - For "How many …" questions, return ONLY the count as a plain integer string
       (e.g., ["3"]), never as "Name — 3" or "3 (Alice, Bob)".
     - For questions asking for a person or attribute, list every distinct answer found.
+
+    WORKSPACE: Use add_to_workspace() to record entities and relationships as you
+    find them (e.g., "birdwatchers found: Alice Smith, Bob Jones"). Use get_workspace()
+    to review accumulated findings and avoid re-searching already-covered entities.
+    Recording progress lets you process ALL anchor entities exhaustively without
+    losing track across many search steps.
     """
 
     question: str = dspy.InputField()
@@ -40,10 +47,11 @@ class ExhaustiveMultiHopQA(dspy.Signature):
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
-        self.retrieve = dspy.Retrieve(k=7)
+        self.retrieve = dspy.Retrieve(k=10)
+        self._workspace: List[str] = []
         self.react = dspy.ReAct(
             signature=ExhaustiveMultiHopQA,
-            tools=[self.search_wiki],
+            tools=[self.search_wiki, self.add_to_workspace, self.get_workspace],
             max_iters=50,
         )
 
@@ -52,6 +60,23 @@ class PhantomWikiReAct(dspy.Module):
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
 
+    def add_to_workspace(self, note: str) -> str:
+        """Save a note to your persistent workspace to track found entities and relationships.
+        Use this after each discovery, e.g.: 'Anchor entities (birdwatcher): Alice Smith, Bob Jones'
+        or 'Alice Smith grandchildren: Carol, Dave'. Helps avoid forgetting intermediate findings."""
+        self._workspace.append(note)
+        return f"Saved. Workspace has {len(self._workspace)} note(s)."
+
+    def get_workspace(self) -> str:
+        """Retrieve all notes from your persistent workspace. Use this to review what entities
+        and relationships you have already found, so you can pick up where you left off and
+        ensure you process every anchor entity before finalizing your answer."""
+        if not self._workspace:
+            return "Workspace is empty — no notes recorded yet."
+        entries = "\n".join(f"[{i + 1}] {note}" for i, note in enumerate(self._workspace))
+        return f"=== WORKSPACE ({len(self._workspace)} notes) ===\n{entries}"
+
     def forward(self, question):
+        self._workspace = []  # Reset workspace for each new question
         result = self.react(question=question)
         return dspy.Prediction(answer=result.answer)

@@ -1,26 +1,39 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## High-Level Purpose
-`PhantomWikiReActPipeline` is a DSPy-based question-answering pipeline that answers factoid (multi-hop) questions by iteratively searching a PhantomWiki corpus using a ReAct (Reasoning + Acting) loop. The pipeline is optimized to maximize answer F1 score against gold answer sets.
+## ARCHITECTURE TITLE: "3-stage pipeline: QuestionDecomposer → retry-resilient PhantomWikiReAct → AnswerValidator"
+
+## ARCHITECTURE SUMMARY:
+`PhantomWikiReActPipeline` is a three-stage DSPy pipeline for factoid multi-hop question answering over a PhantomWiki corpus. The first stage (`QuestionDecomposer`) decomposes the input question into 2–3 diverse seed queries and extracts metadata (`is_multi_answer`, `answer_format_hint`) to guide downstream reasoning. The second stage (`PhantomWikiReAct`) runs a ReAct loop (up to 50 iterations) using a retry-resilient `search_wiki` tool that automatically retries up to 4 times with `time.sleep(2)` on transient ColBERT server failures. The third stage (`AnswerValidator`) cleans, de-duplicates, and validates the raw answer list against the format hint before returning the final prediction.
+
+This design directly addresses three dominant failure modes: ~40% timeout-cascade failures (via Python-level retry in `search_wiki`), ~20% partial-answer failures (via `is_multi_answer` awareness passed into ReAct), and ~5% format failures (via `AnswerValidator` stripping context artifacts like "Person — attribute").
+
+## ARCHITECTURE DESCRIPTION:
+The pipeline is orchestrated by `PhantomWikiReActPipeline.forward()` which calls three sub-modules in sequence. First, `QuestionDecomposer` (a `dspy.ChainOfThought` on `QuestionDecomposerSignature`) receives the raw question and outputs: (1) `seed_queries` — 2–3 diverse phrasings of the root entity to improve retrieval coverage; (2) `is_multi_answer` — a boolean flag indicating whether the answer likely requires enumerating multiple entities; (3) `answer_format_hint` — a natural-language description of the expected answer format. The first seed query is used as the `question` passed to `PhantomWikiReAct`, together with `is_multi_answer` and `answer_format_hint` as additional input fields of `PhantomWikiReActSignature`. Inside `PhantomWikiReAct`, the `search_wiki(query)` tool wraps `dspy.Retrieve(k=7)` with a retry loop (up to 4 attempts, 2-second sleep between) so transient ColBERT timeouts are recovered at the Python level before the LLM sees a failure message. After ReAct produces a raw `answer: list[str]`, `AnswerValidator` (a `dspy.ChainOfThought` on `AnswerValidatorSignature`) strips accidentally included context from each answer item and outputs a corrected, de-duplicated answer list. The final `dspy.Prediction(answer=...)` is returned from `forward()`.
 
 ## Key Modules and Responsibilities
 
-- **`PhantomWikiReActPipeline`** (`src/program/phantomwiki_pipeline.py`): Top-level DSPy `Module` and entry point. Instantiates a `CountingRM`-wrapped retriever and a `PhantomWikiReAct` sub-program. Sets the retriever in DSPy context before delegating to the sub-program.
+- **`PhantomWikiReActPipeline`** (`src/program/phantomwiki_pipeline.py`): Top-level DSPy `Module` and entry point. Orchestrates the three-stage flow: QuestionDecomposer → PhantomWikiReAct → AnswerValidator.
+
+- **`QuestionDecomposer`** (`src/program/phantomwiki_module.py`): `dspy.ChainOfThought` on `QuestionDecomposerSignature`. Decomposes the question into seed queries and metadata (`is_multi_answer`, `answer_format_hint`) to guide retrieval and answer validation.
+
+- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with `PhantomWikiReActSignature` (`question, is_multi_answer: bool, answer_format_hint: str -> answer: list[str]`) and up to 50 iterations. The `search_wiki` tool retries up to 4 times with 2-second delays on failures or empty results.
+
+- **`AnswerValidator`** (`src/program/phantomwiki_module.py`): `dspy.ChainOfThought` on `AnswerValidatorSignature`. Strips context artifacts from raw answers, de-duplicates, and validates completeness against the format hint.
 
 - **`CountingRM`** (`src/program/counting_rm.py`): A thin instrumentation wrapper around any DSPy retriever. Tracks how many retrieval calls are made during a forward pass via `call_count`, enabling observability without altering retrieval behavior. Wraps a `dspy.ColBERTv2` instance pointed at a hosted ColBERT server.
-
-- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with the signature `question -> answer: list[str]` and up to 50 iterations. Exposes a `search_wiki(query)` tool that retrieves the top-7 passages from the corpus and returns them as newline-separated text, allowing the LLM to iteratively search and reason.
 
 - **`phantomwiki_f1_feedback`** (`src/metric/metric.py`): Evaluation metric used for optimization. Computes token-set F1 between predicted and gold answer lists after case/whitespace normalization. Returns a `ScoreWithFeedback` object (score ∈ [0,1] + human-readable feedback detailing correct, missed, and extra answers) for use with the GEPA optimizer.
 
 ## Data Flow
 1. A `question` string is passed into `PhantomWikiReActPipeline.forward`.
-2. The pipeline sets `CountingRM` as the active retriever via `dspy.context`.
-3. `PhantomWikiReAct.forward` invokes `dspy.ReAct`, which iteratively calls `search_wiki` to retrieve passages from the remote ColBERT index, reasoning over them step-by-step.
-4. After up to 50 iterations, ReAct produces a final `answer: list[str]` prediction.
-5. The prediction is wrapped in a `dspy.Prediction` and returned.
-6. `phantomwiki_f1_feedback` scores the prediction against gold answers, returning an F1 score and textual feedback to guide prompt optimization.
+2. `QuestionDecomposer` decomposes the question into `seed_queries`, `is_multi_answer`, and `answer_format_hint`.
+3. The first seed query and metadata are passed to `PhantomWikiReAct` inside a `dspy.context(rm=self.rm)` block.
+4. `PhantomWikiReAct.forward` invokes `dspy.ReAct`, which iteratively calls `search_wiki` (with retry logic) to retrieve passages from the remote ColBERT index, reasoning over them step-by-step.
+5. After up to 50 iterations, ReAct produces a raw `answer: list[str]`.
+6. `AnswerValidator` cleans and de-duplicates the raw answer list.
+7. The validated prediction is wrapped in a `dspy.Prediction` and returned.
+8. `phantomwiki_f1_feedback` scores the prediction against gold answers, returning an F1 score and textual feedback to guide prompt optimization.
 
 ## DSPy Patterns and Guidelines
 

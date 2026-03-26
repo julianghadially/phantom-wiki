@@ -1,0 +1,104 @@
+{
+  "rm": {
+    "k": 3
+  },
+  "program.retrieve": {
+    "k": 7
+  },
+  "program.react.react": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "You are a specialized Agent designed to process and answer complex natural language queries about individuals, their family relationships, attributes, and related aggregates, using a structured knowledge base called PhantomWiki. PhantomWiki contains richly detailed entries about people including extensive familial links and personal attributes.\n\n---\n\n### Input:\n\n- `question` (string): a natural language inquiry focusing on individuals, family relations (including extended kin and in-laws), personal attributes (like date of birth, occupation, hobby, gender), or aggregate queries (such as counts of relations).\n\n---\n\n### Output:\n\n- `answer` (string or array of strings): the precise answer derived from PhantomWiki data, reflecting accurate multi-hop reasoning through family and attribute relations.\n\n---\n\n### Available Tools and Interaction Protocol:\n\nYou may only interact with the environment through these tools:\n\n1. `search_wiki(query: string)`  \n   - Query PhantomWiki entries by names, relations, attributes, or combinations thereof to retrieve detailed information about individuals, their family members, friends, and attributes.  \n   - Returned data includes all family roles (parents, siblings, cousins including various degrees, in-laws, grandparents, great-grandparents, nieces, nephews, etc.) and attributes (date of birth in YYYY-MM-DD, occupation, hobby, gender, friends).\n\n2. `finish()`  \n   - Use when confident that you have fully gathered relevant facts required to answer the question correctly.\n\n---\n\n### Domain-Specific Family Relations and Attributes:\n\n- PhantomWiki supports a wide range of family relationships:\n  - Direct: father, mother, son, daughter, husband, wife, brother, sister\n  - Extended and multiple degrees: cousin, second cousin, niece, nephew, aunt, uncle, grandparents (grandfather, grandmother), great-grandparents (great-grandfather, great-grandmother), great-grandchildren, second aunts, father-in-law, daughter-in-law, brother-in-law, sister-in-law, (including in-law extensions)\n- Relations can appear as direct stated facts like \"The son of X is Y\" or \"The sister of X is Y\".\n- Personal attributes include date of birth, occupation, hobby, gender, and friends.\n\n---\n\n### Reasoning and Strategy Guidelines:\n\n- Break down the question into smaller relational or attribute-based steps (multi-hop reasoning).\n- Prioritize querying for:\n  - Persons explicitly named or described by attributes (e.g., that “person whose occupation is X” or “person born on YYYY-MM-DD”).\n  - Their relatives (parents, children, siblings, cousins, in-laws).\n  - Specific relation types cited in the question, especially those needing multi-generational reasoning (e.g., \"grandfather of\", \"great-uncle of\", \"second cousin of\").\n- Carefully extract and remember all relevant familial links, attributes, and friends from responses to support tracing chains of relations.\n- Use incremental queries with precise targeting to avoid unnecessary data and to efficiently build the family or attribute graph required.\n- For aggregate/count queries, count distinct valid entities only after fully resolving the relational qualifiers.\n- For queries involving relatives of relatives (e.g., niece of the second uncle), iteratively identify each relation step before moving forward.\n- Be alert to possible ambiguities or multiple matches:\n  - Verify uniqueness by cross-checking data like DOB, parents, or spouse.\n  - Include multiple answers if the data indicates multiple valid entities.\n- When uncertain if enough data is gathered, continue searching rather than finishing.\n\n---\n\n### Query Formulation Tips:\n\n- Use exact or close variations of relation or attribute phrases present in PhantomWiki (e.g., \"second uncle\", \"brother-in-law\", \"person whose hobby is gongoozling\").\n- Search using concatenated terms combining person names with relations or attributes for targeted retrieval (e.g., \"second uncle Juan Arevalo\", \"hobby mineral collecting\").\n- Explore relatives of key persons progressively (parents, siblings, cousins of different generations) to trace the required relations.\n\n---\n\n### Typical Reasoning Flow Examples:\n\n- To find \"the sister of the father of the husband of Nanette Tillis\":\n  1. Find Nanette Tillis.\n  2. Find Nanette’s husband.\n  3. Find husband’s father.\n  4. Find sister(s) of that father.\n\n- To count \"How many sisters does the niece of the great-granddaughter of the person whose hobby is gongoozling have?\":\n  1. Locate person(s) with hobby gongoozling.\n  2. Identify their great-granddaughter(s).\n  3. Identify niece(s) of that great-granddaughter.\n  4. Count sisters of each such niece.\n\n- For multi-attribute queries, combine constraints carefully and validate persons by multiple attributes when possible.\n\n---\n\n### Handling Ambiguities and Missing Data:\n\n- If no exact matches for date or attribute constraints are found, try alternate phrasing or subsets of the constraint.\n- If no entries for a queried person appear, note that the answer is not available or empty.\n- Return answers exactly as found, including multiple applicable values if needed.\n\n---\n\n### Answer Formatting:\n\n- Provide direct answers with exact names or values as strings or lists of strings.\n- For counts, return the integer count as a string.\n- For attributes (e.g., date of birth, hobby, occupation), return the exact value(s).\n- When multiple solutions exist, list them all distinctly.\n\n---\n\n### Summary:\n\nYou perform precise multi-hop family and attribute reasoning over PhantomWiki entries, using only `search_wiki` and `finish`. Break down complex kinship and attribute chains pragmatically, resolve relations stepwise, confirm identities with attributes, and produce exact, authoritative answers reflecting PhantomWiki data. Employ careful incremental queries to manage complexity and ambiguity.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Next Thought:",
+          "description": "${next_thought}"
+        },
+        {
+          "prefix": "Next Tool Name:",
+          "description": "${next_tool_name}"
+        },
+        {
+          "prefix": "Next Tool Args:",
+          "description": "${next_tool_args}"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "program.react.extract.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "Given the fields `question`, produce the fields `answer`.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Answer:",
+          "description": "${answer}"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "program.check_completeness.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "Assess whether the current set of answers fully satisfies the question, or if additional answers are likely missing.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Current Answers:",
+          "description": "answers found so far for the question"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Appears Complete:",
+          "description": "True if the current answers appear to fully answer the question; False if additional answers are likely missing"
+        },
+        {
+          "prefix": "Follow Up Hint:",
+          "description": "a reformulated search hint to find missing entities if the answer appears incomplete; empty string if complete"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "metadata": {
+    "dependency_versions": {
+      "python": "3.11",
+      "dspy": "3.1.3",
+      "cloudpickle": "3.1"
+    }
+  }
+}

@@ -1,6 +1,21 @@
 import dspy
 
 
+class AnchorEntityExtraction(dspy.Signature):
+    """Identify the anchor attribute being queried in the question and extract all entity names from the passages that match that anchor attribute/value."""
+
+    question: str = dspy.InputField()
+    search_passages: str = dspy.InputField(
+        desc="passages retrieved from broad PhantomWiki search"
+    )
+    anchor_attribute: str = dspy.OutputField(
+        desc="the attribute and value being queried, e.g. 'occupation: farm manager'"
+    )
+    matching_entities: list[str] = dspy.OutputField(
+        desc="all entity names in the passages that match the anchor attribute/value from the question"
+    )
+
+
 class CompletenessCheck(dspy.Signature):
     """Assess whether the current set of answers fully satisfies the question, or if additional answers are likely missing."""
 
@@ -19,6 +34,8 @@ class CompletenessCheck(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=7)
+        self.retrieve_broad = dspy.Retrieve(k=25)
+        self.anchor_extractor = dspy.ChainOfThought(AnchorEntityExtraction)
         self.react = dspy.ReAct(
             signature="question -> answer: list[str]",
             tools=[self.search_wiki],
@@ -43,8 +60,26 @@ class PhantomWikiReAct(dspy.Module):
         return normalized
 
     def forward(self, question):
-        # Pass 1: initial ReAct search
-        pass1_result = self.react(question=question)
+        # Pre-enumeration step: broad retrieval + anchor entity extraction
+        broad_results = self.retrieve_broad(question)
+        passages_str = "\n\n".join(broad_results.passages)
+        anchor_result = self.anchor_extractor(
+            question=question, search_passages=passages_str
+        )
+        matching_entities = anchor_result.matching_entities or []
+
+        if matching_entities:
+            entities = matching_entities
+            enhanced_q = (
+                f"{question}\n[Important: Found {len(entities)} entities matching the "
+                f"anchor attribute: {entities}. You MUST trace the complete chain for "
+                f"EACH of these entities and report a separate answer for each one.]"
+            )
+        else:
+            enhanced_q = question
+
+        # Pass 1: initial ReAct search using enhanced question
+        pass1_result = self.react(question=enhanced_q)
         pass1_answers = self._normalize_answers(pass1_result.answer)
 
         # Completeness check: gate second pass to avoid regression on single-answer questions
@@ -56,8 +91,14 @@ class PhantomWikiReAct(dspy.Module):
             return dspy.Prediction(answer=pass1_answers)
 
         # Pass 2: targeted follow-up search for missing answers
+        anchor_context = (
+            f" The anchor entities identified are: {matching_entities}."
+            if matching_entities
+            else ""
+        )
         follow_up_q = (
-            f"{question}\n[Context: Already found these answers: {pass1_answers}. "
+            f"{question}\n[Context: Already found these answers: {pass1_answers}."
+            f"{anchor_context} "
             f"Now find ANY additional answers not yet listed above, by trying different search angles.]"
         )
         pass2_result = self.react(question=follow_up_q)

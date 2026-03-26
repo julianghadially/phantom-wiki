@@ -1,10 +1,12 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
+## ARCHITECTURE TITLE: "Adaptive two-pass ReAct with CompletenessCheck gating and deterministic answer normalizer"
+
 ## Architecture Summary
 
 ### High-Level Purpose
-PhantomWikiReActPipeline is a DSPy-based question-answering system designed to answer multi-hop factual questions by iteratively searching a private knowledge corpus called PhantomWiki. It employs a ReAct (Reasoning + Acting) loop that interleaves language model reasoning steps with targeted retrieval actions, enabling it to gather evidence across multiple hops before producing a final answer.
+PhantomWikiReActPipeline is a DSPy-based question-answering system designed to answer multi-hop factual questions by iteratively searching a private knowledge corpus called PhantomWiki. It employs an adaptive two-pass ReAct architecture: a first ReAct pass gathers initial answers, a `ChainOfThought` completeness checker gates whether a second targeted search round is needed, and a deterministic normalizer strips "Name — Value" format contamination from all answers.
 
 ### Key Modules & Responsibilities
 
@@ -12,15 +14,19 @@ PhantomWikiReActPipeline is a DSPy-based question-answering system designed to a
 
 - **`CountingRM`** (`src/program/counting_rm.py`): A thin `dspy.Retrieve` wrapper around a ColBERTv2 retriever (hosted remotely via Modal). Tracks the number of retrieval calls made during inference via an internal counter, useful for efficiency monitoring.
 
-- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with the signature `question -> answer: list[str]` and a single `search_wiki` tool. The ReAct agent iterates up to 50 steps, issuing search queries and reasoning over retrieved passages (top-7 per query) before emitting a list of answer strings.
+- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module implementing the two-pass adaptive search pipeline. Contains `dspy.ReAct` (question → answer: list[str], up to 50 iters), `dspy.ChainOfThought(CompletenessCheck)` for mid-pipeline gating, and `_normalize_answers` for deterministic format cleanup.
+
+- **`CompletenessCheck`** (`src/program/phantomwiki_module.py`): DSPy Signature with inputs `question` and `current_answers` and outputs `appears_complete: bool` and `follow_up_hint: str`. Used by `ChainOfThought` to decide whether a second ReAct pass is warranted.
 
 ### Data Flow
 1. A `question` string enters `PhantomWikiReActPipeline.forward`.
 2. `CountingRM` wraps the ColBERTv2 remote retriever and is set as the active DSPy retrieval model.
-3. `PhantomWikiReAct.forward` feeds the question into `dspy.ReAct`, which calls `search_wiki(query)` one or more times (up to 50 iterations).
-4. Each `search_wiki` call uses `dspy.Retrieve(k=7)` to fetch passages from the PhantomWiki ColBERT index.
-5. The ReAct loop reasons over accumulated passages and terminates with `answer: list[str]`.
-6. A `dspy.Prediction(answer=...)` is returned upstream.
+3. **Pass 1**: `PhantomWikiReAct.forward` runs `dspy.ReAct`, calling `search_wiki(query)` up to 50 times. Results are normalized via `_normalize_answers` (strips "Name — Value" contamination).
+4. **Completeness check**: `ChainOfThought(CompletenessCheck)` evaluates pass-1 answers. If `appears_complete` is True, answers are returned immediately (protects single-answer questions from regression).
+5. **Pass 2** (if incomplete): A follow-up question appending the already-found answers is fed into a second `dspy.ReAct` call to find additional missing entities via different search angles. Results are normalized.
+6. **Merge**: Pass-1 and pass-2 answers are merged with `dict.fromkeys` (order-preserving deduplication) and returned as `dspy.Prediction(answer=...)`.
+
+## ARCHITECTURE DESCRIPTION: The PhantomWikiReActPipeline implements an adaptive two-pass ReAct architecture to address the dominant failure mode where the agent finds 1–5 answers and halts when questions have 8–360+ correct answers. The core module PhantomWikiReAct runs an initial ReAct search pass (up to 50 iterations, top-7 ColBERT passages per query), then applies a deterministic _normalize_answers method to strip "Name — Value" format contamination that causes 0.0 F1 even when correct entities are found. A ChainOfThought(CompletenessCheck) module then gates whether a second pass is needed: if appears_complete is True, the pipeline returns immediately to protect already-correct single-answer questions from regression. If incomplete, a follow-up question string is constructed that appends the already-found answers as context and instructs the ReAct agent to try different search angles to find missing entities. Pass-2 answers are normalized and merged with pass-1 answers using order-preserving deduplication (dict.fromkeys). The CompletenessCheck DSPy Signature takes question and current_answers as inputs and produces appears_complete (bool) and follow_up_hint (reformulated search hint) as outputs. This pipeline-level two-pass approach forces a second targeted search round without adding new tools the agent might ignore, leveraging the LM's chain-of-thought reasoning to intelligently decide when additional search effort is warranted.
 
 ### Metric Being Optimized
 **`phantomwiki_f1_feedback`** computes token-set F1 between predicted and gold answer lists (after lowercasing/stripping), then returns a `ScoreWithFeedback` object containing the numeric F1 score (0–1) plus a natural-language feedback string detailing correct, missed, and extraneous answers. This feedback-augmented metric is designed for use with DSPy's GEPA optimizer, which leverages textual feedback to guide prompt refinement.

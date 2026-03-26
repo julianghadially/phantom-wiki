@@ -1,29 +1,25 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## Architecture Summary
+## ARCHITECTURE TITLE: "3-Stage Pipeline: QuestionDecomposer → ReAct (dual-tool, k=15/5) → AnswerGapFinder with exhaustive gap-filling"
 
-### High-Level Purpose
-PhantomWikiReActPipeline is a DSPy-based question-answering system designed to answer multi-hop factual questions by iteratively searching a private knowledge corpus called PhantomWiki. It employs a ReAct (Reasoning + Acting) loop that interleaves language model reasoning steps with targeted retrieval actions, enabling it to gather evidence across multiple hops before producing a final answer.
+## ARCHITECTURE SUMMARY:
 
-### Key Modules & Responsibilities
+PhantomWikiReActPipeline implements a three-stage pipeline designed for exhaustive answer accumulation on multi-hop and enumeration questions over the PhantomWiki corpus. Stage 1 (QuestionDecomposer, dspy.ChainOfThought) classifies the question type ("enumeration", "multi_hop_traversal", or "single_entity"), identifies seed anchor entities, and generates a structured step-by-step search plan. Stage 2 (PhantomWikiReAct, dspy.ReAct with max_iters=40) uses the decomposed plan and anchor entities as additional context and iterates with two complementary retrieval tools: search_wiki (dspy.Retrieve k=15 for broad enumeration) and search_entity (dspy.Retrieve k=5 for targeted entity lookup). It outputs a candidate answer list and an exploration summary. Stage 3 (AnswerGapFinder, dspy.ChainOfThought) reviews the candidates, emits up to 5 missing_searches, and produces a final_answer list.
 
-- **`PhantomWikiReActPipeline`** (`src/program/phantomwiki_pipeline.py`): Top-level `dspy.Module` pipeline. Instantiates the retrieval model and the core ReAct program, then injects the retrieval model into the DSPy context on every `forward(question)` call. Acts as the main entry point for evaluation and optimization.
+If missing_searches is non-empty, a gap-filling loop executes each query with dspy.Retrieve(k=15), appends newly discovered unique entities to the candidate list, augments the exploration summary, then re-runs AnswerGapFinder once more to finalise the answer. The entire pipeline runs inside a dspy.context(rm=self.rm) block so that CountingRM (wrapping ColBERTv2 via Modal) intercepts all retrieval calls for efficiency tracking.
 
-- **`CountingRM`** (`src/program/counting_rm.py`): A thin `dspy.Retrieve` wrapper around a ColBERTv2 retriever (hosted remotely via Modal). Tracks the number of retrieval calls made during inference via an internal counter, useful for efficiency monitoring.
+## ARCHITECTURE DESCRIPTION:
 
-- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with the signature `question -> answer: list[str]` and a single `search_wiki` tool. The ReAct agent iterates up to 50 steps, issuing search queries and reasoning over retrieved passages (top-7 per query) before emitting a list of answer strings.
+PhantomWikiReActPipeline is the top-level DSPy pipeline for answering multi-hop and enumeration questions over PhantomWiki. It orchestrates three collaborating sub-modules, all wired inside forward().
 
-### Data Flow
-1. A `question` string enters `PhantomWikiReActPipeline.forward`.
-2. `CountingRM` wraps the ColBERTv2 remote retriever and is set as the active DSPy retrieval model.
-3. `PhantomWikiReAct.forward` feeds the question into `dspy.ReAct`, which calls `search_wiki(query)` one or more times (up to 50 iterations).
-4. Each `search_wiki` call uses `dspy.Retrieve(k=7)` to fetch passages from the PhantomWiki ColBERT index.
-5. The ReAct loop reasons over accumulated passages and terminates with `answer: list[str]`.
-6. A `dspy.Prediction(answer=...)` is returned upstream.
+**Stage 1 – QuestionDecomposer** (dspy.ChainOfThought over the QuestionDecomposer signature): Receives the raw question and outputs (a) question_type: one of "enumeration", "multi_hop_traversal", "single_entity"; (b) anchor_entities: the seed entities/attributes to search first; (c) search_plan: a natural-language step-by-step retrieval strategy.
 
-### Metric Being Optimized
-**`phantomwiki_f1_feedback`** computes token-set F1 between predicted and gold answer lists (after lowercasing/stripping), then returns a `ScoreWithFeedback` object containing the numeric F1 score (0–1) plus a natural-language feedback string detailing correct, missed, and extraneous answers. This feedback-augmented metric is designed for use with DSPy's GEPA optimizer, which leverages textual feedback to guide prompt refinement.
+**Stage 2 – PhantomWikiReAct** (dspy.ReAct, max_iters=40): Receives question, search_plan, and anchor_entities. Equipped with two tools — search_wiki(query) using dspy.Retrieve(k=15) for broad corpus sweep, and search_entity(entity_name) using dspy.Retrieve(k=5) for precise entity lookup. Outputs candidate_answers (list[str]) and exploration_summary (str).
+
+**Stage 3 – AnswerGapFinder** (dspy.ChainOfThought over the AnswerGapFinder signature): Receives question, candidate_answers, and exploration_summary. Outputs missing_searches (list[str], up to 5 queries) and final_answer (list[str]). If missing_searches is non-empty, a gap-filling loop runs each query through dspy.Retrieve(k=15), appends unique entity candidates, then re-runs AnswerGapFinder to produce the definitive answer.
+
+**CountingRM** wraps ColBERTv2 (hosted on Modal) and tracks retrieval call counts. The pipeline returns dspy.Prediction(answer=final_answer).
 
 ## DSPy Patterns and Guidelines
 
@@ -67,4 +63,3 @@ Common prebuilt modules include:
 - `dspy.ChainOfThought`: for reasoning first, followed by a response
 - `dspy.ReAct`: for tool calling
 - `dspy.ProgramOfThought`: for getting the LM to output code, whose execution results will dictate the response
-

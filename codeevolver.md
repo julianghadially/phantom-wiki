@@ -1,26 +1,37 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
+## ARCHITECTURE TITLE: "ReAct + Targeted Answer-Completion Loop with IdentifyMissingEntityQueries & ExtractTargetAttribute"
+
 ## Architecture Summary
 
 ### High-Level Purpose
-PhantomWikiReActPipeline is a DSPy-based question-answering system designed to answer multi-hop factual questions by iteratively searching a private knowledge corpus called PhantomWiki. It employs a ReAct (Reasoning + Acting) loop that interleaves language model reasoning steps with targeted retrieval actions, enabling it to gather evidence across multiple hops before producing a final answer.
+PhantomWikiReActPipeline is a DSPy-based question-answering system designed to answer multi-hop factual questions by iteratively searching a private knowledge corpus called PhantomWiki. It employs a two-phase strategy: (1) an initial ReAct loop that interleaves reasoning with retrieval to find the primary answer, followed by (2) a targeted answer-completion loop that systematically retrieves missing answers by iterating over unchecked entity paths identified by a lightweight ChainOfThought gap-finder.
 
 ### Key Modules & Responsibilities
 
-- **`PhantomWikiReActPipeline`** (`src/program/phantomwiki_pipeline.py`): Top-level `dspy.Module` pipeline. Instantiates the retrieval model and the core ReAct program, then injects the retrieval model into the DSPy context on every `forward(question)` call. Acts as the main entry point for evaluation and optimization.
+- **`PhantomWikiReActPipeline`** (`src/program/phantomwiki_pipeline.py`): Top-level `dspy.Module` pipeline. Instantiates the retrieval model, the core ReAct program, and three new sub-modules for the completion loop (`gap_finder`, `attr_extractor`, `completion_retrieve`). The `forward()` method runs the initial ReAct pass, then drives the targeted completion loop before returning a deduplicated answer list.
+
+- **`IdentifyMissingEntityQueries`** (`src/program/phantomwiki_pipeline.py`): DSPy Signature used by `gap_finder` (a `ChainOfThought` module). Given the question, initial answers, and the ReAct reasoning trace, it determines whether additional entity paths were missed and generates up to 10 targeted search queries for unchecked entities, plus the target attribute to extract.
+
+- **`ExtractTargetAttribute`** (`src/program/phantomwiki_pipeline.py`): DSPy Signature used by `attr_extractor` (a `ChainOfThought` module). Given retrieved passages for a specific entity query, it extracts only new attribute values not already in the existing answer list.
 
 - **`CountingRM`** (`src/program/counting_rm.py`): A thin `dspy.Retrieve` wrapper around a ColBERTv2 retriever (hosted remotely via Modal). Tracks the number of retrieval calls made during inference via an internal counter, useful for efficiency monitoring.
 
-- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with the signature `question -> answer: list[str]` and a single `search_wiki` tool. The ReAct agent iterates up to 50 steps, issuing search queries and reasoning over retrieved passages (top-7 per query) before emitting a list of answer strings.
+- **`PhantomWikiReAct`** (`src/program/phantomwiki_module.py`): Core reasoning module. Uses `dspy.ReAct` with the signature `question -> answer: list[str]` and a single `search_wiki` tool. The ReAct agent iterates up to 50 steps, issuing search queries and reasoning over retrieved passages (top-7 per query) before emitting a list of answer strings. Now also returns the `reasoning` trace for downstream use.
 
 ### Data Flow
 1. A `question` string enters `PhantomWikiReActPipeline.forward`.
 2. `CountingRM` wraps the ColBERTv2 remote retriever and is set as the active DSPy retrieval model.
-3. `PhantomWikiReAct.forward` feeds the question into `dspy.ReAct`, which calls `search_wiki(query)` one or more times (up to 50 iterations).
+3. `PhantomWikiReAct.forward` feeds the question into `dspy.ReAct`, which calls `search_wiki(query)` one or more times (up to 50 iterations). Returns `answer` and `reasoning`.
 4. Each `search_wiki` call uses `dspy.Retrieve(k=7)` to fetch passages from the PhantomWiki ColBERT index.
-5. The ReAct loop reasons over accumulated passages and terminates with `answer: list[str]`.
-6. A `dspy.Prediction(answer=...)` is returned upstream.
+5. The ReAct loop reasons over accumulated passages and terminates with `answer: list[str]` and a `reasoning` trace.
+6. The `gap_finder` ChainOfThought analyzes the question, initial answers, and reasoning trace to identify unchecked entity paths and generate targeted queries.
+7. For each of up to 10 targeted queries, `completion_retrieve` (k=7) fetches passages, then `attr_extractor` extracts new answer values not already found.
+8. All answers are deduplicated (case-insensitive, order-preserving) and returned as `dspy.Prediction(answer=deduped)`.
+
+## ARCHITECTURE DESCRIPTION:
+PhantomWikiReActPipeline implements a two-phase answer-completion strategy for multi-hop QA over the PhantomWiki corpus. In Phase 1, a ReAct agent (up to 50 iterations, top-7 retrieval per query) reasons and searches to produce an initial answer list along with its full reasoning trace. In Phase 2, the pipeline runs a targeted completion loop: the IdentifyMissingEntityQueries signature (via ChainOfThought) analyzes the question, initial answers, and reasoning trace to determine whether additional entity paths remain unchecked — e.g., all siblings, all persons with a given hobby — and generates up to 10 specific search queries. For each query, direct retrieval (k=7) fetches passages, and the ExtractTargetAttribute signature (via ChainOfThought) extracts only new attribute values not already in the answer list. This directly addresses the systematic multi-entity enumeration failure common in ReAct-only approaches, where the agent may find one valid answer chain but miss others. The completion phase uses lightweight direct retrieval + extraction rather than a full second ReAct loop, making it efficient. Final answers are deduplicated while preserving order and returned as a list.
 
 ### Metric Being Optimized
 **`phantomwiki_f1_feedback`** computes token-set F1 between predicted and gold answer lists (after lowercasing/stripping), then returns a `ScoreWithFeedback` object containing the numeric F1 score (0–1) plus a natural-language feedback string detailing correct, missed, and extraneous answers. This feedback-augmented metric is designed for use with DSPy's GEPA optimizer, which leverages textual feedback to guide prompt refinement.

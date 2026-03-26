@@ -17,4 +17,5 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         result = self.react(question=question)
-        return dspy.Prediction(answer=result.answer)
+        reasoning = getattr(result, 'reasoning', '') or ''
+        return dspy.Prediction(answer=result.answer, reasoning=reasoning)

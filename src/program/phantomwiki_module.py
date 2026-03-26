@@ -1,14 +1,17 @@
 import dspy
 
 
-class ExtractRequestedValues(dspy.Signature):
-    """Only the specific values asked for in the question — dates, names, occupations, or counts — without including person names or extra context like 'Name — Value' pairs"""
+def _extract_values(items: list[str]) -> list[str]:
+    """Deterministically extract values from ReAct answer items.
 
-    question: str = dspy.InputField()
-    raw_answer: list[str] = dspy.InputField()
-    answer: list[str] = dspy.OutputField(
-        desc="Only the specific values asked for in the question — dates, names, occupations, or counts — without including person names or extra context like 'Name — Value' pairs"
-    )
+    If any item contains ' — ', split all items on ' — ' and return the part
+    after the separator (handling 'Name — Value' formatting). Otherwise return
+    the items unchanged.
+    """
+    separator = " \u2014 "
+    if any(separator in item for item in items):
+        return [item.split(separator, 1)[1] if separator in item else item for item in items]
+    return items
 
 
 class PhantomWikiReAct(dspy.Module):
@@ -20,7 +23,6 @@ class PhantomWikiReAct(dspy.Module):
             tools=[self.search_wiki, self.search_wiki_broad],
             max_iters=50,
         )
-        self.answer_extractor = dspy.ChainOfThought(ExtractRequestedValues)
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns relevant passages."""
@@ -34,5 +36,5 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         result = self.react(question=question)
-        extracted = self.answer_extractor(question=question, raw_answer=result.answer)
-        return dspy.Prediction(answer=extracted.answer)
+        answer = _extract_values(result.answer)
+        return dspy.Prediction(answer=answer)

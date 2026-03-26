@@ -1,3 +1,5 @@
+import re
+
 import dspy
 
 
@@ -16,23 +18,15 @@ class CompletenessCheck(dspy.Signature):
     )
 
 
-class EntityFrontierExtractor(dspy.Signature):
-    """From the reasoning trace and partial answers, identify intermediate entities in the relationship chain that were found but not fully explored, and generate targeted search queries to find their relatives (children, siblings, etc.)."""
-
-    question: str = dspy.InputField()
-    current_answers: list[str] = dspy.InputField(desc="answers found so far")
-    pass_reasoning: str = dspy.InputField(
-        desc="reasoning trace describing which entities were found and which relationships were traversed"
-    )
-    frontier_entities: list[str] = dspy.OutputField(
-        desc="specific named entities found in the chain that still need their relatives explored (e.g., grandchildren who haven't had their own children searched yet)"
-    )
-    targeted_search_hints: list[str] = dspy.OutputField(
-        desc="concrete search queries like 'son of [name]', 'children of [name]', '[name] family' to find next-level entities"
-    )
-    needs_more_exploration: bool = dspy.OutputField(
-        desc="True if the answer set is clearly incomplete and specific entities remain unexplored"
-    )
+# Pre-compiled regex for _normalize_answers:
+# Matches "Firstname Lastname: value" (at least two capitalized words before colon)
+_RE_PERSON_NAME_PREFIX = re.compile(
+    r"^[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)+:\s+(.+)$"
+)
+# Matches "relationship-word: Name" (one or more lowercase/hyphenated words before colon)
+_RE_RELATIONSHIP_PREFIX = re.compile(
+    r"^[a-z][a-z-]*(?:\s+[a-z][a-z-]*)*:\s+(.+)$"
+)
 
 
 class PhantomWikiReAct(dspy.Module):
@@ -43,7 +37,7 @@ class PhantomWikiReAct(dspy.Module):
             tools=[self.search_wiki],
             max_iters=50,
         )
-        self.frontier_extractor = dspy.ChainOfThought(EntityFrontierExtractor)
+        self.completeness_check = dspy.ChainOfThought(CompletenessCheck)
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns relevant passages."""
@@ -52,13 +46,29 @@ class PhantomWikiReAct(dspy.Module):
 
     @staticmethod
     def _normalize_answers(answers: list[str]) -> list[str]:
-        """Strip 'Name — Value' format contamination by keeping only the right-hand side."""
+        """Strip format contamination from answers.
+
+        Handles:
+        1. 'Name — Value' em-dash patterns → keep right side
+        2. 'Firstname Lastname: value' colon patterns (person name before colon) → keep right side
+        3. 'relationship-word: Name' colon patterns (lowercase/hyphenated prefix) → keep right side
+        """
         normalized = []
         for item in answers:
+            item = item.strip()
+            # 1. Strip em-dash "Name — Value" pattern
             if " — " in item:
-                normalized.append(item.split(" — ", 1)[1].strip())
+                item = item.split(" — ", 1)[1].strip()
+            # 2. Strip "Firstname Lastname: value" person-name colon pattern
+            m = _RE_PERSON_NAME_PREFIX.match(item)
+            if m:
+                item = m.group(1).strip()
             else:
-                normalized.append(item)
+                # 3. Strip "relationship-word: Name" lowercase prefix pattern
+                m2 = _RE_RELATIONSHIP_PREFIX.match(item)
+                if m2:
+                    item = m2.group(1).strip()
+            normalized.append(item)
         return normalized
 
     def forward(self, question):
@@ -66,61 +76,25 @@ class PhantomWikiReAct(dspy.Module):
         pass1_result = self.react(question=question)
         pass1_answers = self._normalize_answers(pass1_result.answer)
 
-        # Extract frontier entities from Pass 1 to guide targeted follow-up
-        pass1_reasoning = (
-            pass1_result.get("reasoning", "")
-            if hasattr(pass1_result, "get")
-            else getattr(pass1_result, "reasoning", "")
-        )
-        frontier1 = self.frontier_extractor(
+        # Check completeness to decide whether a second pass is needed
+        completeness = self.completeness_check(
             question=question,
             current_answers=pass1_answers,
-            pass_reasoning=pass1_reasoning,
         )
 
-        if not frontier1.needs_more_exploration:
+        if completeness.appears_complete:
             return dspy.Prediction(answer=pass1_answers)
 
-        # Pass 2: targeted search using frontier entities and concrete search hints
+        # Pass 2: targeted follow-up embedding already-found answers and the hint
         follow_up_q = (
             f"{question}\n"
             f"[Already found: {pass1_answers}. "
-            f"Key intermediate entities to explore further: {frontier1.frontier_entities}. "
-            f"Suggested searches: {frontier1.targeted_search_hints}. "
-            f"Search exhaustively for relatives of each frontier entity.]"
+            f"Hint for missing answers: {completeness.follow_up_hint}. "
+            f"Search exhaustively for the remaining answers.]"
         )
         pass2_result = self.react(question=follow_up_q)
         pass2_answers = self._normalize_answers(pass2_result.answer)
 
-        # Merge Pass 1 + Pass 2 with deduplication
-        merged_12 = list(dict.fromkeys(pass1_answers + pass2_answers))
-
-        # Extract frontier entities from Pass 2 for potential Pass 3
-        pass2_reasoning = (
-            pass2_result.get("reasoning", "")
-            if hasattr(pass2_result, "get")
-            else getattr(pass2_result, "reasoning", "")
-        )
-        frontier2 = self.frontier_extractor(
-            question=question,
-            current_answers=merged_12,
-            pass_reasoning=pass2_reasoning,
-        )
-
-        if not frontier2.needs_more_exploration:
-            return dspy.Prediction(answer=merged_12)
-
-        # Pass 3: final targeted search (max 3 passes total)
-        follow_up_q3 = (
-            f"{question}\n"
-            f"[Already found: {merged_12}. "
-            f"Key intermediate entities to explore further: {frontier2.frontier_entities}. "
-            f"Suggested searches: {frontier2.targeted_search_hints}. "
-            f"Search exhaustively for relatives of each frontier entity.]"
-        )
-        pass3_result = self.react(question=follow_up_q3)
-        pass3_answers = self._normalize_answers(pass3_result.answer)
-
-        # Merge all three passes with deduplication
-        merged_all = list(dict.fromkeys(merged_12 + pass3_answers))
-        return dspy.Prediction(answer=merged_all)
+        # Merge Pass 1 + Pass 2 with order-preserving deduplication
+        merged = list(dict.fromkeys(pass1_answers + pass2_answers))
+        return dspy.Prediction(answer=merged)

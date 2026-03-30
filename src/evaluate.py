@@ -10,9 +10,9 @@ from src.metric.metric import phantomwiki_f1
 
 dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini", cache=False))
 
-selected_pipeline = RLMPipeline
+selected_pipeline = PhantomWikiReActPipeline
 
-def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
+def evaluate(split: str = "val", max_questions: int | None = None, optimized_program: str | None = None) -> dict:
     split_file = {
         "train": "phantomwiki_train.json",
         "val": "phantomwiki_val.json",
@@ -27,6 +27,9 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
         questions = questions[:max_questions]
 
     pipeline = selected_pipeline()
+
+    if optimized_program:
+        pipeline = dspy.load(optimized_program, allow_pickle=True)
 
     scores = []
     by_difficulty = {}
@@ -58,5 +61,6 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
 
 if __name__ == "__main__":
     split = sys.argv[1] if len(sys.argv) > 1 else "val"
-    result = evaluate(split)
+    opt_program = sys.argv[2] if len(sys.argv) > 2 else None
+    result = evaluate(split, optimized_program=opt_program)
     print(json.dumps(result, indent=2))

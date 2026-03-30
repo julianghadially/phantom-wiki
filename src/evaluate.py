@@ -1,5 +1,6 @@
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import dspy
@@ -24,7 +25,7 @@ def _log_loaded_prompts(pipeline):
             print(f"[mlflow] Logged prompt for {name} ({len(instructions)} chars)")
 
 
-def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
+def evaluate(split: str = "val", max_questions: int | None = None, num_threads: int = 1) -> dict:
     split_file = {
         "train": "phantomwiki_train.json",
         "val": "phantomwiki_val.json",
@@ -57,24 +58,27 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
         # Log each predictor's loaded instructions so we can verify they match
         _log_loaded_prompts(pipeline)
 
-        scores = []
+        scores = [None] * len(questions)
         by_difficulty = {}
 
-        for i, q in enumerate(questions):
-            print("--------------------------------")
-            print(f"Question: {q['question']}")
-            result = pipeline(question=q["question"])
+        def eval_question(i, q):
+            print(f"[{i}] Question: {q['question']}")
+            res = pipeline(question=q["question"])
             gold = dspy.Example(answer=q["answer"]).with_inputs("question")
-            score = phantomwiki_f1(gold, result)
-            scores.append(score)
-            print(f"Result: {result.answer}")
-            print(f"Answer: {q['answer']}")
-            print(f"Score: {score}")
+            score = phantomwiki_f1(gold, res)
+            print(f"[{i}] Result: {res.answer}")
+            print(f"[{i}] Answer: {q['answer']}")
+            print(f"[{i}] Score: {score}")
+            return i, q, score
 
-            mlflow.log_metric("f1", score, step=i)
-
-            d = q["difficulty"]
-            by_difficulty.setdefault(d, []).append(score)
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = {executor.submit(eval_question, i, q): i for i, q in enumerate(questions)}
+            for future in as_completed(futures):
+                i, q, score = future.result()
+                scores[i] = score
+                mlflow.log_metric("f1", score, step=i)
+                d = q["difficulty"]
+                by_difficulty.setdefault(d, []).append(score)
 
         result = {
             "mean_f1": sum(scores) / len(scores) if scores else 0.0,
@@ -95,5 +99,6 @@ def evaluate(split: str = "val", max_questions: int | None = None) -> dict:
 
 if __name__ == "__main__":
     split = sys.argv[1] if len(sys.argv) > 1 else "val"
-    result = evaluate(split)
+    threads = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    result = evaluate(split, num_threads=threads)
     print(json.dumps(result, indent=2))

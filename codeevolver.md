@@ -1,25 +1,27 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: DSPy ReAct Agent with ColBERTv2 Retrieval over PhantomWiki Corpus
+## ARCHITECTURE TITLE: Workspace-Driven Entity Gap-Filling ReAct with GapAnalyzer and EntityTargetedFocusSignature
 
 ## ARCHITECTURE SUMMARY:
-The system is a DSPy-based question-answering pipeline targeting the PhantomWiki benchmark. The top-level entry point, `PhantomWikiReActPipeline`, composes two core components: a `CountingRM` retrieval wrapper around a remote ColBERTv2 index, and a `PhantomWikiReAct` reasoning module. The pipeline sets the DSPy retrieval context and delegates all question-answering logic to the inner ReAct agent.
+The system is a DSPy-based question-answering pipeline targeting the PhantomWiki benchmark. The top-level entry point, `PhantomWikiReActPipeline`, orchestrates a two-pass workspace-driven architecture: a broad initial ReAct pass followed by targeted entity gap-filling. On the first pass, the inner `PhantomWikiReAct` agent (up to 30 iterations) explores the question space and produces initial answers along with a trajectory of thoughts and observations. The pipeline then uses `GapAnalyzer` (ChainOfThought) to identify named entities that were encountered but whose final attributes were never retrieved. For each such gap entity (up to 4), a focused `entity_react` (ReAct with `EntityTargetedFocusSignature`, up to 12 iterations) performs a targeted investigation. All answers are merged and deduplicated preserving order.
 
-`PhantomWikiReAct` implements the ReAct (Reasoning + Acting) agent pattern via `dspy.ReAct`, iteratively interleaving language model reasoning steps with calls to a `search_wiki` tool backed by the ColBERTv2 retriever. The agent is configured to produce a `list[str]` answer and may take up to 50 reasoning/action iterations per question.
-
-The optimization metric, `phantomwiki_f1_feedback`, scores predictions using token-level set F1 between predicted and gold answer lists, and additionally returns structured textual feedback (correct, missed, and extra answers) compatible with the GEPA optimizer via DSPy's `ScoreWithFeedback`.
+`PhantomWikiReActPipeline` owns a shared `search_wiki` tool (backed by `dspy.Retrieve(k=7)` and a remote ColBERTv2 index) used by both the entity_react and the inner PhantomWikiReAct module. The optimization metric, `phantomwiki_f1_feedback`, scores predictions using token-level set F1 and returns GEPA-compatible structured feedback.
 
 ## ARCHITECTURE DESCRIPTION:
-**PhantomWikiReActPipeline** (`src/program/phantomwiki_pipeline.py`) is the top-level `dspy.Module`. On initialization, it instantiates a `CountingRM` wrapping a `dspy.ColBERTv2` retriever pointed at a remotely hosted PhantomWiki corpus (served via Modal). It also instantiates `PhantomWikiReAct` as the inner reasoning program. The `forward` method sets the active DSPy retrieval model (via `dspy.context(rm=self.rm)`) and calls the inner program with the incoming question.
+**PhantomWikiReActPipeline** (`src/program/phantomwiki_pipeline.py`) is the top-level `dspy.Module` implementing the workspace-driven gap-filling architecture. It initializes: a `CountingRM`-wrapped `dspy.ColBERTv2` retriever; a `dspy.Retrieve(k=7)` used by its own `search_wiki` method; the inner `PhantomWikiReAct` program; a `dspy.ChainOfThought(GapAnalyzer)` for gap analysis; and a `dspy.ReAct(EntityTargetedFocusSignature, tools=[self.search_wiki], max_iters=12)` for entity-focused follow-up. The `forward` method (1) calls the inner react directly to capture the full trajectory prediction, (2) extracts a 2000-char trajectory summary from thought/observation fields, (3) invokes GapAnalyzer to identify unfilled entity gaps and determine if the investigation is complete, (4) if incomplete, loops over up to 4 pending entities running targeted ReAct passes, and (5) merges and deduplicates all answers before returning.
 
-**PhantomWikiReAct** (`src/program/phantomwiki_module.py`) implements the core ReAct agent. It holds a `dspy.Retrieve(k=7)` component and a `dspy.ReAct` agent with the signature `question -> answer: list[str]`, using `search_wiki` as its sole tool and allowing up to 50 agentic iterations. The `search_wiki` tool invokes the retriever and joins the top-7 retrieved passages into a single string for the LM to reason over. The `forward` method wraps the ReAct output into a `dspy.Prediction`.
+**GapAnalyzer** (defined in `phantomwiki_pipeline.py`) is a `dspy.Signature` used with `ChainOfThought`. It takes the original question, initial answers, and trajectory summary, and outputs `pending_entities` (named entities mentioned as intermediate nodes whose attributes were never finally retrieved) and `investigation_complete` (bool).
 
-**CountingRM** (`src/program/counting_rm.py`) is a lightweight `dspy.Retrieve` subclass that wraps any underlying retriever, incrementing a `call_count` on every retrieval invocation. This enables downstream monitoring or budget-aware analysis of retrieval usage.
+**EntityTargetedFocusSignature** (defined in `phantomwiki_pipeline.py`) is a `dspy.Signature` for the entity-focused ReAct sub-agent. It takes the question, a specific `target_entity`, and `context_from_prior_search`, and outputs `partial_answers` — the answers found for that entity.
 
-**Metric — phantomwiki_f1_feedback** (`src/metric/metric.py`) evaluates model predictions with set-based F1: both gold and predicted answers are normalized (lowercased, stripped), converted to sets, and scored via precision/recall harmonic mean. The `phantomwiki_f1_feedback` variant also returns a `ScoreWithFeedback` object containing a human-readable summary of correct matches, missed answers, and spurious predictions, making it directly compatible with GEPA (Generative Evaluator Prompt Amplification) for optimizer-driven prompt refinement.
+**PhantomWikiReAct** (`src/program/phantomwiki_module.py`) implements the core first-pass ReAct agent with `dspy.ReAct(question -> answer: list[str], max_iters=30)` and its own `search_wiki` tool backed by ColBERTv2.
 
-**Data flow**: A question string enters `PhantomWikiReActPipeline.forward` → the ReAct agent iteratively calls `search_wiki` (→ ColBERTv2 → top-7 passages) and reasons over retrieved text → produces a `list[str]` answer → evaluated against gold answers using F1 with structured feedback for optimization.
+**CountingRM** (`src/program/counting_rm.py`) is a lightweight `dspy.Retrieve` subclass that counts retrieval invocations for monitoring.
+
+**Metric — phantomwiki_f1_feedback** (`src/metric/metric.py`) evaluates predictions using token-level set F1 and returns a `ScoreWithFeedback` object for GEPA-based optimizer-driven prompt refinement.
+
+**Data flow**: question → PhantomWikiReActPipeline.forward → [Pass 1] PhantomWikiReAct (30-iter ReAct, ColBERTv2) → initial_answers + trajectory → GapAnalyzer (ChainOfThought) → pending_entities → [Pass 2, per entity] EntityTargetedFocusSignature ReAct (12-iter) → partial_answers → merge + deduplicate → final answer list → F1 evaluation.
 
 ## DSPy Patterns and Guidelines
 

@@ -7,7 +7,7 @@ class PhantomWikiReAct(dspy.Module):
         self.react = dspy.ReAct(
             signature="question -> answer: list[str]",
             tools=[self.search_wiki],
-            max_iters=50,
+            max_iters=30,
         )
 
     def search_wiki(self, query: str) -> str:

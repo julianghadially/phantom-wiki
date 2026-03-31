@@ -1,25 +1,27 @@
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: DSPy ReAct Agent with ColBERTv2 Retrieval over PhantomWiki Corpus
+## ARCHITECTURE TITLE: Planner → Multi-Branch Sequential Investigation → Synthesizer with QuestionDecomposer, FocusedInvestigator, AnswerSynthesizer
 
 ## ARCHITECTURE SUMMARY:
-The system is a DSPy-based question-answering pipeline targeting the PhantomWiki benchmark. The top-level entry point, `PhantomWikiReActPipeline`, composes two core components: a `CountingRM` retrieval wrapper around a remote ColBERTv2 index, and a `PhantomWikiReAct` reasoning module. The pipeline sets the DSPy retrieval context and delegates all question-answering logic to the inner ReAct agent.
+The system is a DSPy-based question-answering pipeline targeting the PhantomWiki benchmark, now structured as a three-phase Planner → Multi-Branch Sequential Investigation → Synthesizer architecture. `PhantomWikiReActPipeline` orchestrates a `QuestionDecomposer` (planner), a `FocusedInvestigator` (per-branch ReAct agent), and an `AnswerSynthesizer` (deduplicating aggregator), with `PhantomWikiReAct` retained as a fallback.
 
-`PhantomWikiReAct` implements the ReAct (Reasoning + Acting) agent pattern via `dspy.ReAct`, iteratively interleaving language model reasoning steps with calls to a `search_wiki` tool backed by the ColBERTv2 retriever. The agent is configured to produce a `list[str]` answer and may take up to 50 reasoning/action iterations per question.
+The `QuestionDecomposer` (via `dspy.ChainOfThought`) breaks a multi-hop question into 2–4 independent investigation branches, each targeting a distinct logical chain. A shared `FocusedInvestigator` module — a lightweight `dspy.ReAct` with `k=10` retrieval and 15 max iterations — is invoked sequentially for each branch, accumulating partial answers. The `AnswerSynthesizer` (via `dspy.ChainOfThought`) deduplicates and format-normalizes all partial answers into a final `list[str]` response.
 
-The optimization metric, `phantomwiki_f1_feedback`, scores predictions using token-level set F1 between predicted and gold answer lists, and additionally returns structured textual feedback (correct, missed, and extra answers) compatible with the GEPA optimizer via DSPy's `ScoreWithFeedback`.
+The optimization metric, `phantomwiki_f1_feedback`, scores predictions using token-level set F1 with structured textual feedback compatible with GEPA optimization.
 
 ## ARCHITECTURE DESCRIPTION:
-**PhantomWikiReActPipeline** (`src/program/phantomwiki_pipeline.py`) is the top-level `dspy.Module`. On initialization, it instantiates a `CountingRM` wrapping a `dspy.ColBERTv2` retriever pointed at a remotely hosted PhantomWiki corpus (served via Modal). It also instantiates `PhantomWikiReAct` as the inner reasoning program. The `forward` method sets the active DSPy retrieval model (via `dspy.context(rm=self.rm)`) and calls the inner program with the incoming question.
+**PhantomWikiReActPipeline** (`src/program/phantomwiki_pipeline.py`) is the top-level `dspy.Module`. It instantiates a `CountingRM`-wrapped `dspy.ColBERTv2` retriever, the original `PhantomWikiReAct` as fallback, a `dspy.ChainOfThought(QuestionDecomposer)` planner, a `FocusedInvestigator` sub-module, and a `dspy.ChainOfThought(AnswerSynthesizer)`. The `forward` method runs three sequential phases inside `dspy.context(rm=self.rm)`.
 
-**PhantomWikiReAct** (`src/program/phantomwiki_module.py`) implements the core ReAct agent. It holds a `dspy.Retrieve(k=7)` component and a `dspy.ReAct` agent with the signature `question -> answer: list[str]`, using `search_wiki` as its sole tool and allowing up to 50 agentic iterations. The `search_wiki` tool invokes the retriever and joins the top-7 retrieved passages into a single string for the LM to reason over. The `forward` method wraps the ReAct output into a `dspy.Prediction`.
+**Phase 1 — Decompose**: `QuestionDecomposer` (signature class) receives the original question and emits 2–4 independent sub-questions (branches), each targeting a distinct path through the knowledge graph (different intermediate entity, ancestor path, or candidate starting node). Capped at 4 branches to control compute.
 
-**CountingRM** (`src/program/counting_rm.py`) is a lightweight `dspy.Retrieve` subclass that wraps any underlying retriever, incrementing a `call_count` on every retrieval invocation. This enables downstream monitoring or budget-aware analysis of retrieval usage.
+**Phase 2 — Investigate**: `FocusedInvestigator` (a `dspy.Module`) wraps a `dspy.Retrieve(k=10)` and a `dspy.ReAct` with signature `sub_question -> answer: list[str]` and `max_iters=15`. It is invoked sequentially for each branch; exceptions are caught and silently skipped. All answers from all branches are accumulated into `all_partial`.
 
-**Metric — phantomwiki_f1_feedback** (`src/metric/metric.py`) evaluates model predictions with set-based F1: both gold and predicted answers are normalized (lowercased, stripped), converted to sets, and scored via precision/recall harmonic mean. The `phantomwiki_f1_feedback` variant also returns a `ScoreWithFeedback` object containing a human-readable summary of correct matches, missed answers, and spurious predictions, making it directly compatible with GEPA (Generative Evaluator Prompt Amplification) for optimizer-driven prompt refinement.
+**Phase 3 — Synthesize**: `AnswerSynthesizer` (signature class) receives the original question plus all accumulated partial answers and produces a final deduplicated, correctly-formatted `list[str]`. Handles count-aggregation (bare numeric strings) and entity-lookup (bare names) normalization. If all branches failed (empty `all_partial`), the pipeline falls back to `PhantomWikiReAct`.
 
-**Data flow**: A question string enters `PhantomWikiReActPipeline.forward` → the ReAct agent iteratively calls `search_wiki` (→ ColBERTv2 → top-7 passages) and reasons over retrieved text → produces a `list[str]` answer → evaluated against gold answers using F1 with structured feedback for optimization.
+**CountingRM** (`src/program/counting_rm.py`) wraps the ColBERTv2 retriever with a call counter for monitoring. **PhantomWikiReAct** (`src/program/phantomwiki_module.py`) is the original single-agent ReAct (k=7, max_iters=50), preserved as fallback. **Metric** (`src/metric/metric.py`) uses token-level set F1 with GEPA-compatible `ScoreWithFeedback`.
+
+**Data flow**: question → `QuestionDecomposer` → [branch_1, …, branch_N] → sequential `FocusedInvestigator` per branch → `all_partial` answers → `AnswerSynthesizer` → final `dspy.Prediction(answer=list[str])`.
 
 ## DSPy Patterns and Guidelines
 

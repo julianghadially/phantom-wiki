@@ -1,0 +1,169 @@
+{
+  "rm": {
+    "k": 3
+  },
+  "program.retrieve": {
+    "k": 7
+  },
+  "program.react.react": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "You are tasked with producing the field `answer` given an input field `question`. The questions involve complex family and social relationship queries based on a fictional knowledge base (\"PhantomWiki\") which contains detailed information about entities including their family members, friends, occupations, hobbies, dates of birth, and gender.\n\nYour goal is to accurately extract the required information by sequentially querying the provided tools and integrating the information obtained. Your outputs should follow a step-by-step reasoning style interleaving three components for each turn:\n\n1. **next_thought**: Explain your reasoning about the current question, what you intend to do next, and how you are navigating through the relationships or attributes to find the answer.\n\n2. **next_tool_name**: Choose one of the available tools:\n   - `search_wiki`: Invoke this tool to search within the PhantomWiki corpus, submitting queries designed to retrieve relevant information about entities or relationships.\n   - `finish`: When you have all information required to answer the question, finalize by marking the task complete.\n\n3. **next_tool_args**: Provide the arguments in valid JSON format for the selected tool.\n\n**Key task characteristics and strategies:**\n\n- You must navigate multi-hop relationships, often involving family relations (e.g., parent, sibling, cousin, uncle, great-grandchild), social relations (friends and friends of friends), and attributes (hobby, occupation, gender, date of birth).\n\n- Family relationships may be nested, e.g., \"the brother of the sister of the father\", \"the great-grandson of the friend of the child\", or more complex compositions. You need to break down these chains systematically.\n\n- Sometimes you need to count or list relationships (e.g., count how many male second cousins someone has), so remember to aggregate results only once you are confident you have the relevant entities.\n\n- The PhantomWiki texts provide structured information about persons, including the mentions of family roles, friends, and attributes. Parsing these results carefully to extract the needed details is essential.\n\n- When possible, search for specific individuals or relationship terms iteratively rather than attempting to overload a single query.\n\n- Avoid premature `finish` calls; only finish when you have all necessary information to produce an accurate answer.\n\n- Answers may be single or multiple (e.g., names, counts, attributes). The output answer should match the question's intent (e.g., if the question asks \"Who is\", provide the name(s); if \"How many\", provide counts).\n\n- Utilize consistent terminology and inferred relation chains to systematically resolve multi-hop relations.\n\n**Formatting:**\n\n- Repeat the cycle of thought → tool call → observation until the answer is fully derived.\n\n- When finishing, issue `finish` with empty arguments.\n\n**Examples:**\n\n- For \"How many mothers does the great-grandson of the friend of the child of Rosemary Bledsoe have?\", navigate from Rosemary Bledsoe to her child, to that child's friend, to that friend's great-grandson, then count that person's mothers.\n\n- For \"What is the hobby of the brother-in-law of Timmy Wolfe?\", find Timmy Wolfe's brother-in-law via family relations, then output their hobby.\n\n- For queries involving date of birth or specific attributes, search with precise keys (e.g., date strings) to identify unique persons, then retrieve the required attributes or relations.\n\nUse thorough stepwise querying, careful relation chain following, and aggregation where needed for accurate and complete answers.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Next Thought:",
+          "description": "${next_thought}"
+        },
+        {
+          "prefix": "Next Tool Name:",
+          "description": "${next_tool_name}"
+        },
+        {
+          "prefix": "Next Tool Args:",
+          "description": "${next_tool_args}"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "program.react.extract.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "You will be given a natural language `question` involving family relationships, attributes, and complex kinship and social relations, often requiring multi-step reasoning over a knowledge base similar to PhantomWiki: a structured person-directory with detailed family, friends, and attribute information.\n\nYour task is to produce an `answer` that directly responds to the question, typically by (a) identifying specific individuals or counts of individuals defined by the kinship or relational pattern in the question, or (b) returning values of particular attributes (like occupation, date of birth) for the identified individuals.\n\nYou should:\n\n1. Parse the question to identify the key entities (people named or described via attributes) and relationships (family relations like parent, child, sibling, cousin, in-law, and social relations like friend), including indirect or compound relations (e.g., \"great-grandparent\", \"female first cousin once removed\", \"brother of the grandson of...\").\n\n2. Formulate a reasoning plan that leverages the explicit relationships to traverse the family and social graph step by step, possibly involving multiple hops, filtering by attributes (e.g., gender, occupation, date of birth), and performing aggregations (counts, lists).\n\n3. Use each step to query or simulate accessing the knowledge base, identifying people related through the chain of relationships.\n\n4. When aggregations are required (e.g., \"how many\", \"count\"), produce the final count as a string in a list (e.g., [\"2\"]).\n\n5. When attributes of a person are requested, output the value(s) as strings within a list (e.g., [\"dentist\"] or [\"0994-05-11\"]).\n\n6. If multiple valid answers are possible (e.g., multiple siblings or friends), return all relevant answers in a list unless the question specifies a unique result.\n\n7. If the required information is not available in the knowledge base (e.g., person not found, missing family members), respond clearly indicating that the information cannot be determined rather than guessing or fabricating data.\n\n8. Follow a rigorous, stepwise logical chain of reasoning that can be traced clearly from the question to the answer, including identification of all intermediate entities and relations as necessary.\n\n9. Avoid including code snippets, exceptions, or infrastructure detail in the final answer; the output should be clean and focused on the factual response.\n\n10. Always provide the answer as a list of strings, each string being the direct answer(s) to the posed question.\n\nSummary: Given a question about familial or social relations over a detailed character-based knowledge base, your mission is to deduce the answer by methodically traversing family, friends, and attribute relations, applying attribute filters and aggregates as needed, and produce a concise list of string(s) as the answer or a clear indication of inability to answer due to missing data.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Answer:",
+          "description": "${answer}"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "retrieve": {
+    "k": 7
+  },
+  "followup_react.react": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "You are an intelligent reasoning Agent tasked with extending and refining answers to complex family- and attribute-based questions using the PhantomWiki corpus. \n\nInputs you receive each episode are:  \n- `question`: a natural language query involving people, their relationships, attributes, and family structures.  \n- `already_found`: a non-exhaustive list of answers from a previous investigation pass. These answers are correct but incomplete; your job is to find any additional valid answers by exploring alternative relational chains and paths *not yet investigated*.\n\nYour core objective is to discover all *additional* relevant answers reachable by following different reasoning pathways over family relations, attributes (like occupation, hobby, date of birth, gender), and entity traversals not covered before. Think broadly and creatively about family and social connections, including inverse and compound relationships (e.g., great-uncle of great-uncle), attribute-based constraints, and aggregation queries (counts, lists). Treat `already_found` as partial and seek further completeness.\n\nYou may use these two agents/tools:  \n1. `_search_wiki` -- query PhantomWiki corpus with keywords, entities, or relationship terms to retrieve relevant passages which may contain family links or attribute info.  \n2. `finish` -- signal that you have collected enough evidence to produce your final answer(s), including extending or confirming `already_found`.\n\nIn each step, respond with three elements:  \n- `next_thought`: your reasoning about data so far, what to look up next, or synthesis based on observations, emphasizing exploratory reasoning of *alternative* or *deeper* paths, relationships, or tricker queries (e.g., multi-level ancestors, nephews of nephews).  \n- `next_tool_name`: either `_search_wiki` or `finish`.  \n- `next_tool_args`: for `_search_wiki`, a JSON object with a query string designed to maximize discovery of unexplored relevant info; for `finish`, leave empty.\n\nYour reasoning should:  \n- Use known family relationship patterns (parent-child, siblings, cousins, in-laws, ancestors/descendants, gender-specific roles, marriages).  \n- Explore alternative paths to entities (e.g., searching siblings of parents, cousins of cousins, spouses of siblings).  \n- Consider attributes crucial to filtering or identifying targets (gender, occupation, date of birth, hobbies).  \n- When appropriate, disambiguate by cross-referencing multiple related pages (e.g., parents of parents to find great-grandparents).  \n- Aggregate counts correctly by ensuring distinct and relevant members are counted (e.g., counting distinct female cousins).  \n- Reject simplistic or too-literal answers if the question demands complex family-graph navigation.  \n- Look beyond immediate matches, extending search to related individuals or different relationship paths which might yield new answers or different counts.  \n\nYour exploration is iterative and should be thorough but efficient. Only call `finish` once you have verified no further distinct answers are possible beyond those found through comprehensive examination of the wiki.\n\nExamples in the feedback illustrate typical question types, such as:  \n- Multi-level family relations (great-grandparent, great-uncle of great-uncle, grandchild of great-grandchild).  \n- Complex attribute role filtering (e.g., occupation or hobby of a relative defined by multiple chained relations).  \n- Aggregate counting of family members matching certain criteria (e.g., number of female cousins).  \n- Discovery of alternate relatives not previously listed.  \n\nRemember your main purpose: starting from a question and initial partial answer(s), find *additional* valid answers by searching for *alternative or deeper relationship chains* in PhantomWiki — do *not* stop at the first matches or known answers.\n\nMaintain clear, logical thought steps showing your reasoning to enable traceability of your conclusions and exploration decisions.\n\n---\n\n**In summary:**\n\n- Treat `already_found` as partial; explore more.  \n- Explore alternative relational and attribute-based paths.  \n- Use progressive, iterative wiki search queries informed by previous results.  \n- Reason carefully about family/gender/attribute constraints.  \n- Aggregate counts with care.  \n- Finish only when no further distinct answers are discoverable.  \n\nYour outputs in each step must interleave:  \n1. `next_thought` - your reasoning and plan.  \n2. `next_tool_name` - tool to call next (`_search_wiki` or `finish`).  \n3. `next_tool_args` - arguments to the tool, JSON formatted.\n\nThis will enable you to generate comprehensive, logically sound, and complete answers for complex family and attribute questions over PhantomWiki data.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Already Found:",
+          "description": "answers discovered so far; treat as partial/non-exhaustive"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Next Thought:",
+          "description": "${next_thought}"
+        },
+        {
+          "prefix": "Next Tool Name:",
+          "description": "${next_tool_name}"
+        },
+        {
+          "prefix": "Next Tool Args:",
+          "description": "${next_tool_args}"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "followup_react.extract.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "You are given a question and a list of answers already found via one investigation pass.\nExplore alternative relationship chains and paths NOT yet investigated to find additional answers.\nTreat already_found as a non-exhaustive partial result — there may be more valid answers\nreachable via different paths, relationships, or entity traversals that were not explored before.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Already Found:",
+          "description": "answers discovered so far; treat as partial/non-exhaustive"
+        },
+        {
+          "prefix": "Trajectory:",
+          "description": "${trajectory}"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Answer:",
+          "description": "additional answers found via unexplored paths"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "answer_normalizer.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [],
+    "signature": {
+      "instructions": "Normalize a list of candidate answers to the correct output format.\n\nRules (apply in order):\n1. If answers contain 'Name: count' pairs (e.g. 'Alice Smith: 3', 'Bob Jones: 0'), extract ONLY the\n   numeric count part from each entry, then return the UNIQUE numeric values as plain strings (e.g. ['0', '3']).\n2. Remove any entries that are error/uncertainty messages containing phrases like 'Cannot be determined',\n   'cannot determine', 'No person found', 'not found', 'not present', 'please confirm', 'Near match', etc.\n3. For answers that are already clean atomic values (plain names, plain numbers, plain hobby/occupation strings\n   without explanatory text), keep them unchanged.\n4. IMPORTANT: If after applying all rules the list would be empty, return the original raw_answers unchanged.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "${question}"
+        },
+        {
+          "prefix": "Raw Answers:",
+          "description": "raw combined answer list from ReAct passes, may contain format artifacts"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Normalized Answers:",
+          "description": "cleaned answer list with format artifacts and error strings removed"
+        }
+      ]
+    },
+    "lm": null
+  },
+  "metadata": {
+    "dependency_versions": {
+      "python": "3.11",
+      "dspy": "3.1.3",
+      "cloudpickle": "3.1"
+    }
+  }
+}

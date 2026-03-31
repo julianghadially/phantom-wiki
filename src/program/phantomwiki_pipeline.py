@@ -33,6 +33,27 @@ class AnswerNormalizerSignature(dspy.Signature):
     normalized_answers: list[str] = dspy.OutputField(desc="cleaned answer list with format artifacts and error strings removed")
 
 
+class SeedEnumerationSignature(dspy.Signature):
+    """You are given a question and a list of answers/entities already found.
+    Exhaustively enumerate ALL intermediate entities relevant to answering this question
+    (e.g., all friends of X, all people with occupation Y, all people with hobby Z).
+    Be exhaustive — list every entity you can find, not just the first one."""
+
+    question: str = dspy.InputField()
+    already_found: list[str] = dspy.InputField()
+    seed_entities: list[str] = dspy.OutputField(desc="ALL intermediate entities relevant to answering this question (e.g., all friends of X, all people with occupation Y, all people with hobby Z) — be exhaustive, list every one you can find")
+
+
+class MultiSeedAnswerExtractorSignature(dspy.Signature):
+    """Extract additional answers from retrieved passages for multiple seed entities.
+    Focus on finding new atomic answer values not already in the already_found list."""
+
+    question: str = dspy.InputField()
+    retrieved_passages: str = dspy.InputField(desc="passages retrieved for each seed entity")
+    already_found: list[str] = dspy.InputField()
+    additional_answers: list[str] = dspy.OutputField(desc="new atomic answer values (names, numbers, occupations) not already in already_found — no explanatory text, no 'Name: value' pairs")
+
+
 class PhantomWikiReActPipeline(dspy.Module):
     def __init__(self):
         self.rm = CountingRM(dspy.ColBERTv2(url=COLBERT_URL))
@@ -44,10 +65,22 @@ class PhantomWikiReActPipeline(dspy.Module):
             max_iters=25,
         )
         self.answer_normalizer = dspy.ChainOfThought(AnswerNormalizerSignature)
+        self.retrieve_k10 = dspy.Retrieve(k=10)
+        self.seed_enumerator = dspy.ReAct(
+            SeedEnumerationSignature,
+            tools=[self._search_wiki_k10],
+            max_iters=20,
+        )
+        self.multi_seed_extractor = dspy.ChainOfThought(MultiSeedAnswerExtractorSignature)
 
     def _search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns relevant passages."""
         results = self.retrieve(query)
+        return "\n\n".join(results.passages)
+
+    def _search_wiki_k10(self, query: str) -> str:
+        """Search the PhantomWiki corpus with higher recall (k=10). Returns relevant passages."""
+        results = self.retrieve_k10(query)
         return "\n\n".join(results.passages)
 
     def forward(self, question):
@@ -55,6 +88,29 @@ class PhantomWikiReActPipeline(dspy.Module):
             result1 = self.program(question=question)
             result2 = self.followup_react(question=question, already_found=result1.answer)
             combined = list(dict.fromkeys(result1.answer + [a for a in result2.answer if a not in result1.answer]))
+
+            # Pass 3: Seed Entity Fan-Out — exhaustively enumerate intermediate entities
+            try:
+                seed_result = self.seed_enumerator(question=question, already_found=combined)
+                seed_entities = seed_result.seed_entities[:6]  # cap at 6 to avoid overload
+
+                all_passages_parts = []
+                for seed_entity in seed_entities:
+                    passages = self.retrieve_k10(seed_entity + " " + question[:60])
+                    all_passages_parts.append("\n\n".join(passages.passages))
+
+                all_passages = "\n\n---\n\n".join(all_passages_parts)
+                all_passages = all_passages[:4000]  # truncate to ~4000 chars
+
+                extracted = self.multi_seed_extractor(
+                    question=question,
+                    retrieved_passages=all_passages,
+                    already_found=combined,
+                )
+                combined = list(dict.fromkeys(combined + [a for a in extracted.additional_answers if a not in combined]))
+            except Exception:
+                pass  # fall back to combined from passes 1 & 2 if fan-out fails
+
             normalized = self.answer_normalizer(question=question, raw_answers=combined)
             final = normalized.normalized_answers if normalized.normalized_answers else combined
             return dspy.Prediction(answer=final)

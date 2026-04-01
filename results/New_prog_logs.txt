@@ -1,0 +1,1126 @@
+ python -m src.evaluate test codeevolver/results/optimized_program_20260331054613.json
+============================================================
+LOADED PROMPTS / SIGNATURES
+============================================================
+
+--- program.react.react ---
+Instructions: You are tasked with producing the field `answer` given an input field `question`. The questions involve complex family and social relationship queries based on a fictional knowledge base ("PhantomWiki") which contains detailed information about entities including their family members, friends, occupations, hobbies, dates of birth, and gender.
+
+Your goal is to accurately extract the required information by sequentially querying the provided tools and integrating the information obtained. Your outputs should follow a step-by-step reasoning style interleaving three components for each turn:
+
+1. **next_thought**: Explain your reasoning about the current question, what you intend to do next, and how you are navigating through the relationships or attributes to find the answer.
+
+2. **next_tool_name**: Choose one of the available tools:
+   - `search_wiki`: Invoke this tool to search within the PhantomWiki corpus, submitting queries designed to retrieve relevant information about entities or relationships.
+   - `finish`: When you have all information required to answer the question, finalize by marking the task complete.
+
+3. **next_tool_args**: Provide the arguments in valid JSON format for the selected tool.
+                                                                        **Key task characteristics and strategies:**
+
+- You must navigate multi-hop relationships, often involving family relations (e.g., parent, sibling, cousin, uncle, great-grandchild), social relations (friends and friends of friends), and attributes (hobby, occupation, gender, date of birth).
+                                                                        - Family relationships may be nested, e.g., "the brother of the sister of the father", "the great-grandson of the friend of the child", or more complex compositions. You need to break down these chains systematically.
+
+- Sometimes you need to count or list relationships (e.g., count how many male second cousins someone has), so remember to aggregate results only once you are confident you have the relevant entities.
+
+- The PhantomWiki texts provide structured information about persons, including the mentions of family roles, friends, and attributes. Parsing these results carefully to extract the needed details is essential.                                                                              - When possible, search for specific individuals or relationship terms iteratively rather than attempting to overload a single query.
+                                                                        - Avoid premature `finish` calls; only finish when you have all necessary information to produce an accurate answer.
+
+- Answers may be single or multiple (e.g., names, counts, attributes). The output answer should match the question's intent (e.g., if the question asks "Who is", provide the name(s); if "How many", provide counts).  - Utilize consistent terminology and inferred relation chains to systematically resolve multi-hop relations.                                                                                                            **Formatting:**
+
+- Repeat the cycle of thought → tool call → observation until the answer is fully derived.
+
+- When finishing, issue `finish` with empty arguments.
+
+**Examples:**
+
+- For "How many mothers does the great-grandson of the friend of the child of Rosemary Bledsoe have?", navigate from Rosemary Bledsoe to her child, to that child's friend, to that friend's great-grandson, then count that person's mothers.
+                                                                        - For "What is the hobby of the brother-in-law of Timmy Wolfe?", find Timmy Wolfe's brother-in-law via family relations, then output their hobby.
+
+- For queries involving date of birth or specific attributes, search with precise keys (e.g., date strings) to identify unique persons, then retrieve the required attributes or relations.                             Use thorough stepwise querying, careful relation chain following, and aggregation where needed for accurate and complete answers.
+Fields: ['Question:', 'Trajectory:', 'Next Thought:', 'Next Tool Name:', 'Next Tool Args:']
+
+--- program.react.extract.predict ---                                   Instructions: You will be given a natural language `question` involving family relationships, attributes, and complex kinship and social relations, often requiring multi-step reasoning over a knowledge base similar to PhantomWiki: a structured person-directory with detailed family, friends, and attribute information.
+
+Your task is to produce an `answer` that directly responds to the question, typically by (a) identifying specific individuals or counts of individuals defined by the kinship or relational pattern in the question, or (b) returning values of particular attributes (like occupation, date of birth) for the identified individuals.
+                                                                        You should:                                                             1. Parse the question to identify the key entities (people named or described via attributes) and relationships (family relations like parent, child, sibling, cousin, in-law, and social relations like friend), including indirect or compound relations (e.g., "great-grandparent", "female first cousin once removed", "brother of the grandson of...").            2. Formulate a reasoning plan that leverages the explicit relationships to traverse the family and social graph step by step, possibly involving multiple hops, filtering by attributes (e.g., gender, occupation, date of birth), and performing aggregations (counts, lists).                 3. Use each step to query or simulate accessing the knowledge base, identifying people related through the chain of relationships.
+                                                                        4. When aggregations are required (e.g., "how many", "count"), produce the final count as a string in a list (e.g., ["2"]).
+
+5. When attributes of a person are requested, output the value(s) as strings within a list (e.g., ["dentist"] or ["0994-05-11"]).
+
+6. If multiple valid answers are possible (e.g., multiple siblings or friends), return all relevant answers in a list unless the question specifies a unique result.                                                    7. If the required information is not available in the knowledge base (e.g., person not found, missing family members), respond clearly indicating that the information cannot be determined rather than guessing or fabricating data.
+                                                                        8. Follow a rigorous, stepwise logical chain of reasoning that can be traced clearly from the question to the answer, including identification of all intermediate entities and relations as necessary.
+
+9. Avoid including code snippets, exceptions, or infrastructure detail in the final answer; the output should be clean and focused on the factual response.
+
+10. Always provide the answer as a list of strings, each string being the direct answer(s) to the posed question.
+
+Summary: Given a question about familial or social relations over a detailed character-based knowledge base, your mission is to deduce the answer by methodically traversing family, friends, and attribute relations, applying attribute filters and aggregates as needed, and produce a concise list of string(s) as the answer or a clear indication of inability to answer due to missing data.
+Fields: ['Question:', 'Trajectory:', "Reasoning: Let's think step by step in order to", 'Answer:']
+
+--- followup_react.react ---
+Instructions: You are an intelligent reasoning Agent tasked with extending and refining answers to complex family- and attribute-based questions using the PhantomWiki corpus.                                          Inputs you receive each episode are:                                    - `question`: a natural language query involving people, their relationships, attributes, and family structures.                                - `already_found`: a non-exhaustive list of answers from a previous investigation pass. These answers are correct but incomplete; your job is to find any additional valid answers by exploring alternative relational chains and paths *not yet investigated*.                                 Your core objective is to discover all *additional* relevant answers reachable by following different reasoning pathways over family relations, attributes (like occupation, hobby, date of birth, gender), and entity traversals not covered before. Think broadly and creatively about family and social connections, including inverse and compound relationships (e.g., great-uncle of great-uncle), attribute-based constraints, and aggregation queries (counts, lists). Treat `already_found` as partial and seek further completeness.
+                                                                        You may use these two agents/tools:
+1. `_search_wiki` -- query PhantomWiki corpus with keywords, entities, or relationship terms to retrieve relevant passages which may contain family links or attribute info.                                            2. `finish` -- signal that you have collected enough evidence to produce your final answer(s), including extending or confirming `already_found`.
+                                                                        In each step, respond with three elements:
+- `next_thought`: your reasoning about data so far, what to look up next, or synthesis based on observations, emphasizing exploratory reasoning of *alternative* or *deeper* paths, relationships, or tricker queries (e.g., multi-level ancestors, nephews of nephews).
+- `next_tool_name`: either `_search_wiki` or `finish`.                  - `next_tool_args`: for `_search_wiki`, a JSON object with a query string designed to maximize discovery of unexplored relevant info; for `finish`, leave empty.
+
+Your reasoning should:
+- Use known family relationship patterns (parent-child, siblings, cousins, in-laws, ancestors/descendants, gender-specific roles, marriages).
+- Explore alternative paths to entities (e.g., searching siblings of parents, cousins of cousins, spouses of siblings).
+- Consider attributes crucial to filtering or identifying targets (gender, occupation, date of birth, hobbies).
+- When appropriate, disambiguate by cross-referencing multiple related pages (e.g., parents of parents to find great-grandparents).             - Aggregate counts correctly by ensuring distinct and relevant members are counted (e.g., counting distinct female cousins).                    - Reject simplistic or too-literal answers if the question demands complex family-graph navigation.
+- Look beyond immediate matches, extending search to related individuals or different relationship paths which might yield new answers or different counts.
+                                                                        Your exploration is iterative and should be thorough but efficient. Only call `finish` once you have verified no further distinct answers are possible beyond those found through comprehensive examination of the wiki.
+
+Examples in the feedback illustrate typical question types, such as:    - Multi-level family relations (great-grandparent, great-uncle of great-uncle, grandchild of great-grandchild).                                 - Complex attribute role filtering (e.g., occupation or hobby of a relative defined by multiple chained relations).
+- Aggregate counting of family members matching certain criteria (e.g., number of female cousins).
+- Discovery of alternate relatives not previously listed.               Remember your main purpose: starting from a question and initial partial answer(s), find *additional* valid answers by searching for *alternative or deeper relationship chains* in PhantomWiki — do *not* stop at the first matches or known answers.                                          Maintain clear, logical thought steps showing your reasoning to enable traceability of your conclusions and exploration decisions.
+
+---                                                                     **In summary:**
+
+- Treat `already_found` as partial; explore more.
+- Explore alternative relational and attribute-based paths.             - Use progressive, iterative wiki search queries informed by previous results.                                                                  - Reason carefully about family/gender/attribute constraints.
+- Aggregate counts with care.
+- Finish only when no further distinct answers are discoverable.
+
+Your outputs in each step must interleave:                              1. `next_thought` - your reasoning and plan.
+2. `next_tool_name` - tool to call next (`_search_wiki` or `finish`).
+3. `next_tool_args` - arguments to the tool, JSON formatted.
+
+This will enable you to generate comprehensive, logically sound, and complete answers for complex family and attribute questions over PhantomWiki data.                                                                 Fields: ['Question:', 'Already Found:', 'Trajectory:', 'Next Thought:', 'Next Tool Name:', 'Next Tool Args:']                                                                                                           --- followup_react.extract.predict ---
+Instructions: You are given a question and a list of answers already found via one investigation pass.
+Explore alternative relationship chains and paths NOT yet investigated to find additional answers.
+Treat already_found as a non-exhaustive partial result — there may be more valid answers
+reachable via different paths, relationships, or entity traversals that were not explored before.
+Fields: ['Question:', 'Already Found:', 'Trajectory:', "Reasoning: Let's think step by step in order to", 'Answer:']
+                                                                        --- answer_normalizer.predict ---
+Instructions: Normalize a list of candidate answers to the correct output format.
+
+Rules (apply in order):
+1. If answers contain 'Name: count' pairs (e.g. 'Alice Smith: 3', 'Bob Jones: 0'), extract ONLY the
+   numeric count part from each entry, then return the UNIQUE numeric values as plain strings (e.g. ['0', '3']).
+2. Remove any entries that are error/uncertainty messages containing phrases like 'Cannot be determined',
+   'cannot determine', 'No person found', 'not found', 'not present', 'please confirm', 'Near match', etc.
+3. For answers that are already clean atomic values (plain names, plain numbers, plain hobby/occupation strings
+   without explanatory text), keep them unchanged.                      4. IMPORTANT: If after applying all rules the list would be empty, return the original raw_answers unchanged.
+Fields: ['Question:', 'Raw Answers:', "Reasoning: Let's think step by step in order to", 'Normalized Answers:']
+============================================================
+
+Running 208 questions with 2 threads...
+
+--------------------------------                                        Question: How many female cousins does the person whose hobby is tea bag collecting have?
+Result: ['2']                                                           Answer: ['0', '1', '2', '3', '4', '5', '6', '7']
+Score: 0.2222222222222222                                               --------------------------------                                        Question: How many great-aunts does the great-grandson of the great-grandfather of the person whose occupation is health and safety inspector have?                                                                     Result: ['0', '1']
+Answer: ['0', '1', '2', '3', '4', '5', '6']
+Score: 0.4444444444444445
+--------------------------------                                        Question: Who is the grandson of Dortha Mcnulty?                        Result: ['Gerry Criss', 'Terence Criss']
+Answer: ['Gerry Criss', 'Terence Criss']
+Score: 1.0
+--------------------------------
+Question: How many friends does the father-in-law of the grandchild of Cory Tubbs have?                                                         Result: ['2']
+Answer: ['2']                                                           Score: 1.0                                                              --------------------------------                                        Question: How many female cousins does the second aunt of Wesley Hasson have?
+Result: ['1']                                                           Answer: ['2']
+Score: 0.0                                                              --------------------------------
+Question: What is the hobby of the great-grandfather of Deon Gall?      Result: ['herping', 'mini golf']                                        Answer: ['herping', 'notaphily']
+Score: 0.5
+--------------------------------                                        Question: What is the date of birth of the male cousin of the great-grandchild of Adelaida Brice?
+Result: ['1018-10-30']
+Answer: ['1018-10-30', '1025-05-07']                                    Score: 0.6666666666666666
+--------------------------------                                        Question: How many husbands does the niece of the friend of the person whose hobby is knife collecting have?                                    Result: ['0']
+Answer: ['0', '1']
+Score: 0.6666666666666666                                               --------------------------------
+Question: Who is the grandmother of the great-uncle of the great-uncle of Geraldine Ruch?
+Result: ['Kimiko Manis', 'Lynetta Sousa', 'Marilyn Ruch']
+Answer: ['Kimiko Manis', 'Lynetta Sousa']
+Score: 0.8
+--------------------------------                                        Question: How many mothers-in-law does the person whose date of birth is 1050-09-16 have?                                                       Result: ['0']                                                           Answer: ['0', '1']
+Score: 0.6666666666666666
+--------------------------------                                        Question: How many great-grandsons does the person whose hobby is rock painting have?                                                           Result: ['0']
+Answer: ['0', '1', '11', '2', '3', '4', '5', '6', '7']
+Score: 0.19999999999999998                                              --------------------------------                                        Question: How many second uncles does Rosina Robey have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0                                                              --------------------------------                                        Question: What is the occupation of the male cousin of the female second cousin of Emilio Schreiber?                                            Result: ['retail buyer', 'brewing technologist', 'public affairs consultant', 'jewellery designer', 'futures trader']
+Answer: ['chief of staff', 'retail buyer']
+Score: 0.28571428571428575                                              --------------------------------
+Question: What is the date of birth of the brother-in-law of Rowena Waddell?
+Result: ['0903-04-06', '0901-04-20']
+Answer: ['0901-04-20', '0903-04-06']
+Score: 1.0                                                              --------------------------------
+Question: How many mothers-in-law does Alphonso Rawlins have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------                                        Question: Who is the person whose date of birth is 0905-08-27?
+Result: ['No person with date of birth 0905-08-27 is found in PhantomWiki.']
+Answer: ['Alfonso Alcantara', 'Arianna Hyman', 'Bernardo Ellington', 'Bryon Raymer', 'Joanne Isaacson', 'Johnnie Reading', 'Mckinley Leavitt', 'Nelly Lombardi', 'Normand Matson', 'Oscar Stiffler', 'Pablo Padron', 'Raul Townes', 'Signe Utter', 'Stan Cavazos', 'Susanna Huntley', 'Twila Mccomb']
+Score: 0.0
+--------------------------------
+Question: How many cousins does the great-grandchild of the great-grandfather of Deon Gall have?
+Result: ['7']
+Answer: ['0', '1', '3']
+Score: 0.0
+--------------------------------
+Question: How many children does the sister of the child of the person whose occupation is medical secretary have?
+Result: ['1', '5']
+Answer: ['0', '1', '2', '3', '4', '5']
+--------------------------------
+Question: Who is the niece of the daughter of Everett Beggs?
+Score: 0.5
+Result: ['Ilona Coffee', 'Minnie Beggs', 'Odessa Beggs']
+Answer: ['Ilona Coffee', 'Minnie Beggs', 'Odessa Beggs']
+Score: 1.0
+--------------------------------
+Question: How many great-uncles does Geraldine Ruch have?
+Result: ['4']
+Answer: ['1']
+Score: 0.0
+--------------------------------
+Question: How many great-grandparents does the great-grandchild of the wife of the person whose occupation is structural engineer have?
+Result: ['8']
+Answer: ['2', '4', '6', '8']
+Score: 0.4
+--------------------------------
+Question: How many female second cousins does the nephew of the nephew of Mona Steele have?
+Result: ['3']
+Answer: ['1', '3']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many great-granddaughters does the father-in-law of the friend of the person whose date of birth is 0881-04-27 have?
+Result: ['3']
+Answer: ['0', '1', '3', '5']
+Score: 0.4
+--------------------------------
+Question: Who is the cousin of the second uncle of Rosina Robey?
+Result: ['Augustine Ramage']
+Answer: ['Lorraine Slayton']
+Score: 0.0
+--------------------------------
+Question: What is the hobby of the person whose date of birth is 0898-04-13?
+Result: ['Information about a person with the date of birth 0898-04-13 is not available in the database, so the hobby cannot be determined.']
+Answer: ['archaeology', 'dancing', 'die-cast toy', 'entrepreneurship', 'gongoozling', 'ice skating', 'linguistics', 'metal detecting', 'microscopy', 'research', 'shoes', 'teaching', 'video gaming', 'volleyball', 'whale watching']
+Score: 0.0
+--------------------------------
+Question: How many cousins does the male cousin of the granddaughter of the person whose occupation is financial controller have?
+Result: ['1']
+Answer: ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.19999999999999998
+--------------------------------
+Question: How many second aunts does the great-grandchild of Kennith Hylton have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: How many friends does the person whose date of birth is 0898-04-13 have?
+Result: ['Information about the person born on 0898-04-13 and their friends cannot be determined from the available data.']
+Answer: ['0', '12', '2', '3', '4', '5', '6', '7']
+Score: 0.0
+--------------------------------
+Question: What is the occupation of the child of the father of the sibling of Donnell Stamey?
+Result: ['regulatory affairs officer', 'health and safety inspector', 'archivist', 'environmental manager', 'aid worker', 'advice worker']
+Answer: ['advice worker', 'aid worker', 'archivist', 'environmental manager', 'proofreader']
+Score: 0.7272727272727272
+--------------------------------
+Question: How many friends does Kermit Clapp have?
+Result: ['4']
+Answer: ['4']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the person whose hobby is microbiology?
+Result: ['microbiology']
+Answer: ['microbiology']
+Score: 1.0
+--------------------------------
+Question: How many grandparents does the great-grandchild of the person whose occupation is public house manager have?
+Result: ['4']
+Answer: ['2', '4']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many sisters does Terrell Chenault have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: How many great-uncles does the female first cousin once removed of the grandparent of Sam Highsmith have?
+Result: ['0', '2']
+Answer: ['3']
+Score: 0.0
+--------------------------------
+Question: What is the hobby of the brother-in-law of Inez Jude?
+Result: ['physics', 'meditation']
+Answer: ['meditation', 'physics']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the female cousin of Jona Markowitz?
+Result: ['flower collecting and pressing', 'audiophile', 'trapshooting', 'research', 'entrepreneurship', 'microscopy']
+Answer: ['audiophile', 'flower collecting and pressing']
+Score: 0.5
+--------------------------------
+Question: How many sons does the great-grandfather of the great-granddaughter of the mother-in-law of Alphonso Rawlins have?
+Result: ['1', '2']
+Answer: ['0', '2']
+Score: 0.5
+--------------------------------
+Question: How many great-aunts does the grandson of Dortha Mcnulty have?
+Result: ['0']
+Answer: ['1']
+Score: 0.0
+--------------------------------
+Question: Who is the child of the grandfather of Dwain Decker?
+Result: ['Duncan Decker', 'Pearl Decker']
+Answer: ['Duncan Decker', 'Pearl Decker']
+Score: 1.0
+--------------------------------
+Question: Who is the mother of Peter Parke?
+Result: ['Allison Parke']
+Answer: ['Allison Parke']
+Score: 1.0
+--------------------------------
+Question: How many friends does the person whose occupation is advertising account executive have?
+Result: ['1', '65']
+Answer: ['0', '1', '10', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.15384615384615385
+--------------------------------
+Question: How many great-grandparents does the great-granddaughter of the person whose hobby is speed skating have?
+Result: ['8']
+Answer: ['2', '4', '6', '8']
+Score: 0.4
+--------------------------------
+Question: How many children does the grandmother of the son of the son-in-law of Arline Barnes have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: Who is the great-grandchild of the grandfather of the great-granddaughter of Lee Patino?
+Result: ['Jonas Busse', 'Elaine Busse']
+Answer: ['Arianna Escamilla', 'Cedrick Busse', 'Curtis Busse', 'Delma Mcmichael', 'Hanh Escamilla', 'Maynard Busse', 'Teresita Frink']
+Score: 0.0
+--------------------------------
+Question: How many grandmothers does the great-uncle of the great-uncle of Geraldine Ruch have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: How many children does the mother of the uncle of Bruno Robbins have?
+Result: ['3']
+Answer: ['3']
+Score: 1.0
+--------------------------------
+Question: Who is the child of the grandmother of the brother of Cruz Moniz?
+Result: ['Michell Moniz', 'Santos Moniz']
+Answer: ['Michell Moniz', 'Santos Moniz']
+Score: 1.0
+--------------------------------
+Question: How many aunts does the male cousin of the great-grandchild of Adelaida Brice have?
+Result: ['1', '2']
+Answer: ['1', '2']
+Score: 1.0
+--------------------------------
+Question: Who is the person whose date of birth is 0905-03-17?
+Result: ['No person with the date of birth 0905-03-17 is found in the database.']
+Answer: ['Alden Warfield', 'Annabelle Sessions', 'Berneice Fincher', 'Chante Ballinger', 'Jamison Lineberry', 'Lydia Anson', 'Reed Eddings', 'Rowena Baumgardner', 'Shelba Pugliese', 'Taneka Stoltz', 'Wilton Whitlow']
+Score: 0.0
+--------------------------------
+Question: What is the occupation of the grandchild of Eldon Ridenour?
+Result: ['development worker', 'professor emeritus', 'exhibitions officer', 'mental health nurse', 'architectural technologist']
+Answer: ['architectural technologist', 'development worker', 'exhibitions officer', 'mental health nurse', 'professor emeritus']
+Score: 1.0
+--------------------------------
+Question: Who is the cousin of the male cousin of the female second cousin of Emilio Schreiber?
+Result: ['Rogelio Goldman', 'Carmen Goldman', 'Stanford Goldman']
+Answer: ['Abraham Schreiber', 'Brittaney Schreiber', 'Carly Schreiber', 'Delinda Schreiber', 'Ezequiel Schreiber', 'Minh Lucier', 'Rebecka Bowie', 'Shelly Schreiber']
+Score: 0.0
+--------------------------------
+Question: How many great-grandsons does the friend of the grandchild of the person whose date of birth is 0917-08-17 have?
+Result: ['0']
+Answer: ['0', '1', '2', '3', '4', '8']
+Score: 0.2857142857142857
+--------------------------------
+Question: Who is the friend of the granddaughter of Kristopher Friedrich?
+Result: ['Curtis Byrd', 'Amie Geyer', 'Devin Rupp', 'Tonia Kimsey', 'Hattie Goebel', 'Brandy Brannan', 'Shanta Bocanegra']
+Answer: ['Amie Geyer', 'Brandy Brannan', 'Curtis Byrd', 'Devin Rupp', 'Hattie Goebel', 'Shanta Bocanegra', 'Tonia Kimsey']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the cousin of the second uncle of Rosina Robey?
+Result: ['0956-02-09']
+Answer: ['0956-02-09']
+Score: 1.0
+--------------------------------
+Question: How many male first cousins once removed does the friend of the grandchild of the child of Bess Huntington have?
+Result: ['1']
+Answer: ['0', '3']
+Score: 0.0
+--------------------------------
+Question: How many female first cousins once removed does Sara Leyva have?
+Result: ['5']
+Answer: ['5']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the aunt of the person whose date of birth is 0922-11-14?
+Result: ['0972-11-08']
+Answer: ['0889-03-15', '0893-09-20', '0893-11-30', '0895-08-16', '0895-11-19', '0897-05-14', '0898-02-03', '0898-04-03', '0899-11-10', '0901-02-07', '0902-02-10']
+Score: 0.0
+--------------------------------
+Question: What is the occupation of the person whose date of birth is 0912-05-03?
+Result: ['The occupation cannot be determined because no person with date of birth 0912-05-03 is found in the knowledge base.']
+Answer: ['academic librarian', 'arboriculturist', 'chartered certified accountant', 'energy manager', 'facilities manager', 'garment technologist', 'geophysical data processor', 'graphic designer', 'information officer', 'magazine features editor', 'multimedia specialist', 'secretary', 'technical author', 'television production assistant', 'theatre director', 'visual merchandiser']
+Score: 0.0
+--------------------------------
+Question: Who is the mother-in-law of Alphonso Rawlins?
+Result: ['Ofelia Sthilaire']
+Answer: ['Ofelia Sthilaire']
+Score: 1.0
+--------------------------------
+Question: How many sisters-in-law does the daughter-in-law of the great-grandfather of the person whose hobby is crystals have?
+Result: ['4']
+Answer: ['0', '1', '2', '3', '4']
+Score: 0.33333333333333337
+--------------------------------
+Question: Who is the female second cousin of the female second cousin of the great-grandson of Carlotta Freeland?
+Result: ['Kanesha Criss']
+Answer: ['Eliza Koons', 'Georgina Koons', 'Jenniffer Inman', 'Shannon Clark', 'Veronica Koons']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the father of the sibling of Donnell Stamey?
+Result: ['0893-03-12']
+Answer: ['0893-03-12']
+Score: 1.0
+--------------------------------
+Question: How many mothers does the brother of the great-grandson of the person whose hobby is rock painting have?
+Result: ['0']
+Answer: ['1']
+Score: 0.0
+--------------------------------
+Question: How many friends does the person whose hobby is medical science have?
+Result: ['26', '2', '3', '4', '5', '7']
+Answer: ['0', '1', '10', '11', '12', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.5263157894736842
+--------------------------------
+Question: Who is the person whose date of birth is 1050-09-16?
+Result: ['Angeline Hong']
+Answer: ['Alfredo Green', 'Angeline Hong', 'Douglass Libby', 'Ed Scherer', 'Felton Corwin', 'Herbert Lim', 'Jacqueline Hernandez']
+Score: 0.25
+--------------------------------
+Question: What is the occupation of the second aunt of Alan Denney?
+Result: ['health and safety inspector', 'camera operator']
+Answer: ['cytogeneticist', 'therapeutic radiographer']
+Score: 0.0
+--------------------------------
+Question: Who is the sibling of Donnell Stamey?
+Result: ['Ayanna Stamey', 'Jocelyn Stamey', 'Gordon Stamey', 'Sidney Stamey']
+Answer: ['Ayanna Stamey', 'Gordon Stamey', 'Jocelyn Stamey', 'Sidney Stamey']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the person whose date of birth is 0992-10-01?
+Result: ['0992-10-01']
+Answer: ['0992-10-01']
+Score: 1.0
+--------------------------------
+Question: Who is the friend of Ellen Schuman?
+Result: ['Malik Cantwell', 'Marcelina Carroll', 'Luke Gadson', 'Chance Villanueva', 'Jason Tolentino']
+Answer: ['Chance Villanueva', 'Jason Tolentino', 'Luke Gadson', 'Malik Cantwell', 'Marcelina Carroll']
+Score: 1.0
+--------------------------------
+Question: How many siblings does the sister-in-law of the friend of the person whose date of birth is 0785-02-13 have?
+Result: ['0', '3']
+Answer: ['3', '4']
+Score: 0.5
+--------------------------------
+Question: How many great-grandmothers does the female cousin of the female cousin of Jona Markowitz have?
+Result: ['1', '3']
+Answer: ['2']
+Score: 0.0
+--------------------------------
+Question: Who is the sibling of the second uncle of Mario Roy?
+Result: ['Darby Alcorn', 'Cheri Denson']
+Answer: ['George Wojcik']
+Score: 0.0
+--------------------------------
+Question: Who is the cousin of Beulah Smitherman?
+Result: ['Oren Smitherman', 'Alejandra Smitherman', 'Shawna Smitherman']
+Answer: ['Alejandra Smitherman', 'Oren Smitherman', 'Shawna Smitherman']
+Score: 1.0
+--------------------------------
+Question: What is the occupation of the person whose occupation is financial controller?
+Result: ['financial controller']
+Answer: ['financial controller']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the second uncle of Mario Roy?
+Result: ['0874-10-18']
+Answer: ['0874-10-18']
+Score: 1.0
+--------------------------------
+Question: Who is the sister of the brother-in-law of Rowena Waddell?
+Result: ['Gina Rigby', 'Tara Irizarry']
+Answer: ['Gina Rigby', 'Tara Irizarry']
+Score: 1.0
+--------------------------------
+Question: How many friends does the friend of Angelo Ridley have?
+Result: ['4', '2', '5', '3']
+Answer: ['2', '3', '4', '5']
+Score: 1.0
+--------------------------------
+Question: How many female second cousins does the male second cousin of the person whose occupation is advertising copywriter have?
+Result: ['0']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8']
+Score: 0.19999999999999998
+--------------------------------
+Question: How many aunts does the person whose date of birth is 0912-05-03 have?
+Result: ['0']
+Answer: ['0', '1']
+Score: 0.6666666666666666
+--------------------------------
+Question: What is the hobby of the person whose hobby is leaves?
+Result: ['leaves']
+Answer: ['leaves']
+Score: 1.0
+--------------------------------
+Question: Who is the husband of Nanette Tillis?
+Result: ['Simon Tillis']
+Answer: ['Simon Tillis']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the father-in-law of Joan Rocha?
+Result: ['0915-08-16']
+Answer: ['0915-08-16']
+Score: 1.0
+--------------------------------
+Question: How many cousins does the second uncle of Rosina Robey have?
+Result: ['0', '1']
+Answer: ['1']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many great-aunts does the parent of the great-grandchild of the person whose date of birth is 0963-09-20 have?
+Result: ['1', '6']
+Answer: ['0', '1', '2']
+Score: 0.4
+--------------------------------
+Question: Who is the great-grandchild of Kennith Hylton?
+Result: ['Deandre Lillard', 'Nicolle Boger']
+Answer: ['Deandre Lillard', 'Nicolle Boger']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the uncle of the cousin of the grandchild of Eldon Ridenour?
+Result: ['The hobby cannot be determined because the cousin and thus the uncle do not appear to exist in the given family data.']
+Answer: ['flying model planes', 'sports memorabilia', 'weightlifting']
+Score: 0.0
+--------------------------------
+Question: How many friends does the grandchild of the person whose date of birth is 0917-08-17 have?
+Result: ['7', '4']
+Answer: ['1', '2', '3', '4', '5', '6', '8', '9']
+Score: 0.2
+--------------------------------
+Question: Who is the son-in-law of the friend of the grandson of Hazel Barnum?
+Result: ['Abraham Hunter', 'Alvaro Karnes']
+Answer: ['Abraham Hunter', 'Alton Rice']
+Score: 0.5
+--------------------------------
+Question: Who is the brother of Douglass Libby?
+Result: ['Carmine Libby', 'Damon Libby', 'Sal Libby']
+Answer: ['Carmine Libby', 'Damon Libby', 'Sal Libby']
+Score: 1.0
+--------------------------------
+Question: How many great-grandchildren does Forest Benner have?
+Result: ['6', '5']
+Answer: ['5']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many children does the father-in-law of Joan Rocha have?
+Result: ['5']
+Answer: ['5']
+Score: 1.0
+--------------------------------
+Question: How many sisters-in-law does the friend of the person whose occupation is advertising account executive have?
+Result: ['1']
+Answer: ['0', '1', '2', '3', '4']
+Score: 0.33333333333333337
+--------------------------------
+Question: Who is the female cousin of the second aunt of Wesley Hasson?
+Result: ['Maegan Bayer', 'Vernie Bayer']
+Answer: ['Maegan Bayer', 'Vernie Bayer']
+Score: 1.0
+--------------------------------
+Question: How many cousins does the grandchild of Eldon Ridenour have?
+Result: ['4']
+Answer: ['1', '4']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many sisters-in-law does Pasquale Perrone have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: How many friends does Ellen Schuman have?
+Result: ['5']
+Answer: ['5']
+Score: 1.0
+--------------------------------
+Question: Who is the great-grandparent of Dwight Lazarus?
+Result: ['Nell Torgerson', 'Reed Torgerson', 'Tammy Westerman', 'Harley Westerman', 'Rozella Lazarus', 'Derick Lazarus']
+Answer: ['Derick Lazarus', 'Harley Westerman', 'Nell Torgerson', 'Reed Torgerson', 'Rozella Lazarus', 'Tammy Westerman']
+Score: 1.0
+--------------------------------
+Question: How many female cousins does the female cousin of Jona Markowitz have?
+Result: ['3']
+Answer: ['3']
+Score: 1.0
+--------------------------------
+Question: How many great-grandchildren does the parent of the sister-in-law of the person whose date of birth is 0961-11-22 have?
+Result: ['0']
+Answer: ['0', '1', '4', '5', '6', '8']
+Score: 0.2857142857142857
+--------------------------------
+Question: How many fathers-in-law does the person whose occupation is waste management officer have?
+Result: ['1', '3']
+Answer: ['0', '1']
+Score: 0.5
+--------------------------------
+Question: How many great-granddaughters does the person whose occupation is ship broker have?
+Result: ['2', '3']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.33333333333333337
+--------------------------------
+Question: Who is the second aunt of the great-grandchild of Kennith Hylton?
+Result: ['Flora Plumb', 'Vernie Schram']
+Answer: ['Liane Plumb', 'Teena Plumb']
+Score: 0.0
+--------------------------------
+Question: Who is the female cousin of the female cousin of Jona Markowitz?
+Result: ['The female cousin of the female cousin of Jona Markowitz cannot be determined from the available information.']
+Answer: ['Jona Markowitz', 'Maude Fite', 'Shawna Takahashi']
+Score: 0.0
+--------------------------------
+Question: How many nephews does the friend of the person whose hobby is microbiology have?
+Result: ['3']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.18181818181818182
+--------------------------------
+Question: How many friends does the sister of the son of Staci Nolasco have?
+Result: ['6']
+Answer: ['3', '6']
+Score: 0.6666666666666666
+--------------------------------
+Question: What is the date of birth of the grandfather of Dwain Decker?
+Result: ['0951-07-22']
+Answer: ['0951-07-22']
+Score: 1.0
+--------------------------------
+Question: Who is the great-granddaughter of the father-in-law of the friend of the person whose date of birth is 0881-04-27?
+Result: ['Dionne Beil', 'Lorelei Beil']
+Answer: ['Erma Ohara', 'Eve Kaufmann', 'Ivory Siegel', 'Jaclyn Applegate', 'Lacey Kaufmann', 'Laverne Hartung', 'Lawanda Carnahan', 'Lindy Kaufmann', 'Luisa Christy', 'Maira Carruthers', 'Rosalee Carnahan', 'Salley Ohara', 'Shenita Omeara', 'Viva Brock']
+Score: 0.0
+--------------------------------
+Question: How many great-grandmothers does the father-in-law of the friend of Kermit Clapp have?
+Result: ['0', '4']
+Answer: ['0', '1']
+Score: 0.5
+--------------------------------
+Question: Who is the friend of the friend of Angelo Ridley?
+Result: ['Jordon Bost', 'Pricilla Plummer', 'Lyndsey Hotchkiss', 'Yoko Shephard', 'Berneice Christensen', 'Zella Rocha', 'Williams Whorton', 'Araceli Gervais', 'Ione Blocker', 'Evette Bergstrom', 'Rolf Villegas', 'Bob Harley']
+Answer: ['Angelo Ridley', 'Araceli Gervais', 'Berneice Christensen', 'Bob Harley', 'Evette Bergstrom', 'Ione Blocker', 'Jordon Bost', 'Lyndsey Hotchkiss', 'Pricilla Plummer', 'Rolf Villegas', 'Williams Whorton', 'Yoko Shephard', 'Zella Rocha']
+Score: 0.9600000000000001
+--------------------------------
+Question: How many siblings does the brother of the friend of the person whose occupation is health promotion specialist have?
+Result: ['4']
+Answer: ['1', '2', '3', '4']
+Score: 0.4
+--------------------------------
+Question: What is the date of birth of the grandmother of the brother of Cruz Moniz?
+Result: ['0871-12-18', '0876-12-01']
+Answer: ['0871-12-18', '0876-12-01']
+Score: 1.0
+--------------------------------
+Question: How many female second cousins does the friend of the person whose hobby is fingerprint collecting have?
+Result: ['8']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '8']
+Score: 0.2222222222222222
+--------------------------------
+Question: How many children does the person whose date of birth is 0992-10-01 have?
+Result: ['The person with date of birth 0992-10-01 is not found in the database, so their number of children cannot be determined.']
+Answer: ['0', '1', '2', '3']
+Score: 0.0
+--------------------------------
+Question: Who is the great-aunt of the parent of the great-grandchild of the person whose date of birth is 0963-09-20?
+Result: ['Aletha Numbers', 'Marya Canales', 'Demetra Peery', 'Marlyn Jewell']
+Answer: ['Jennie Mchale', 'Jocelyn Benfield', 'Kiana Loney', 'Kisha Bousquet', 'Maude Nieves', 'Odette Binion', 'Rosemary Maestas', 'Sha Warnock', 'Shemika Pettit']
+Score: 0.0
+--------------------------------
+Question: Who is the great-aunt of the male first cousin once removed of Annabelle Bedford?
+Result: ['Sheila Fore', 'Vicki Ricketts']
+Answer: ['Ella Khan', 'Florence Bedford']
+Score: 0.0
+--------------------------------
+Question: Who is the great-grandchild of the grandparent of the mother-in-law of the person whose date of birth is 1048-03-26?
+Result: ['Lawanda Mcgowan']
+Answer: ['Adelaida Zielinski', 'Angela Hoag', 'Beulah Donato', 'Cortney Gerhardt', 'Edmond Hoag', 'Houston Hoag', 'Isidro Aubin', 'Joann Hatley', 'Macy Aubin', 'Maurine Hoag', 'Rudolph Aubin', 'Shaina Bayer', 'Thomasine Espinoza']
+Score: 0.0
+--------------------------------
+Question: How many great-grandsons does the friend of the mother-in-law of the person whose date of birth is 0945-10-16 have?
+Result: ['0']
+Answer: ['0', '1', '2']
+Score: 0.5
+--------------------------------
+Question: What is the hobby of the person whose hobby is crystals?
+Result: ['crystals']
+Answer: ['crystals']
+Score: 1.0
+--------------------------------
+Question: Who is the child of the mother of the uncle of Bruno Robbins?
+Result: ['Giuseppe Robbins', 'Mack Robbins', 'Maurice Robbins']
+Answer: ['Giuseppe Robbins', 'Mack Robbins', 'Maurice Robbins']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the sister-in-law of the friend of the person whose date of birth is 0785-02-13?
+Result: ['0925-10-11', '0923-01-08']
+Answer: ['0941-06-18', '0954-04-26', '0959-07-12']
+Score: 0.0
+--------------------------------
+Question: What is the occupation of the grandson of Dortha Mcnulty?
+Result: ['hydrologist', 'pharmacologist']
+Answer: ['hydrologist', 'pharmacologist']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the great-grandchild of Kennith Hylton?
+Result: ['rock tumbling', 'trainspotting']
+Answer: ['rock tumbling', 'trainspotting']
+Score: 1.0
+--------------------------------
+Question: How many children does the father-in-law of the person whose occupation is waste management officer have?
+Result: ['1']
+Answer: ['1', '2', '3', '4', '5']
+Score: 0.33333333333333337
+--------------------------------
+Question: How many mothers does the cousin of the second uncle of Rosina Robey have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: Who is the great-grandmother of the female cousin of the female cousin of Jona Markowitz?
+Result: ['Hope Hash']
+Answer: ['Edythe Markowitz', 'Hope Hash']
+Score: 0.6666666666666666
+--------------------------------
+Question: Who is the cousin of the great-grandchild of the great-grandfather of Deon Gall?
+Result: ['Juan Annis']
+Answer: ['Everette Daigle', 'Jackqueline Tennant', 'Juan Annis', 'Lavern Schenck', 'Lukas Bohn', 'Moshe Bohn', 'Normand Bohn', 'Scot Schenck']
+Score: 0.2222222222222222
+--------------------------------
+Question: How many sisters does the aunt of the male cousin of the great-grandchild of Adelaida Brice have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: Who is the sibling of the sister-in-law of the friend of the person whose date of birth is 0785-02-13?
+Result: ['Evangelina Person', 'Andre Davila', 'Nicky Davila', 'Bobbie Steib', 'Jaclyn Andresen', 'Marvin Catalano', 'Sterling Catalano', 'Oma Byers', 'Shelba Doering', 'Abe Colman', 'Cesar Colman', 'Danielle Steinke', 'Tiffany George', 'Jada Way', 'Krystyna Hough', 'Mallie Cronk', 'Henrietta Back', 'Shenita Archer', 'Tessie Coats', 'Zora Horsley', 'Johnna Daley', 'Maranda Pierson', 'Paige Martinson', 'Julee Martinson', 'Shante Pond', 'Maybelle Reimer', 'Annabell Lathrop', 'Natacha Friend', 'Xiao Kuhns', 'Julia Friend']
+Answer: ['Amie Catalano', 'Andre Davila', 'Bobbie Steib', 'Evangelina Person', 'Jaclyn Andresen', 'Marvin Catalano', 'Nicky Davila', 'Sterling Catalano']
+Score: 0.3684210526315789
+--------------------------------
+Question: How many great-grandchildren does Kennith Hylton have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the friend of the grandchild of the child of Bess Huntington?
+Result: ['railway modelling', 'table football', 'flower collecting and pressing', 'table tennis', 'weightlifting', 'microbiology', 'city trip', 'association football', 'social studies', 'compact discs']
+Answer: ['railway modelling', 'table football']
+Score: 0.33333333333333337
+--------------------------------
+Question: Who is the sibling of the wife of Al Menchaca?
+Result: ['Florine Lemoine', 'Graciela Radtke']
+Answer: ['Florine Lemoine', 'Graciela Radtke']
+Score: 1.0
+--------------------------------
+Question: Who is the niece of the parent of Sydney Miguel?
+Result: ['Carlotta Vela', 'Dixie Neuman', 'Irene Hollander']
+Answer: ['Carlotta Vela', 'Dixie Neuman', 'Irene Hollander']
+Score: 1.0
+--------------------------------
+Question: How many siblings does Donnell Stamey have?
+Result: ['4']
+Answer: ['4']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the son-in-law of the grandparent of the friend of Amy Thurber?
+Result: ['1006-02-25']
+Answer: ['0920-09-11', '1006-02-25', '1016-09-05']
+Score: 0.5
+--------------------------------
+Question: How many grandsons does the nephew of the person whose hobby is beekeeping have?
+Result: ['0']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8']
+Score: 0.19999999999999998
+--------------------------------
+Question: How many aunts does the great-grandchild of the great-grandparent of the female second cousin of Gloria Valente have?
+Result: ['1', '3']
+Answer: ['0', '1']
+Score: 0.5
+--------------------------------
+Question: What is the hobby of the friend of Emerson Bristow?
+Result: ['metal detecting', 'herping']
+Answer: ['herping', 'metal detecting']
+Score: 1.0
+--------------------------------
+Question: How many husbands does the sister-in-law of Velia Swarey have?
+Result: ['2']
+Answer: ['1']
+Score: 0.0
+--------------------------------
+Question: How many nieces does the sister of Terrell Chenault have?
+Result: ['5']
+Answer: ['4', '5']
+Score: 0.6666666666666666
+--------------------------------
+Question: What is the date of birth of the sister-in-law of the daughter-in-law of the cousin of Noe Weatherspoon?
+Result: ['0952-08-26', '0946-08-21']
+Answer: ['0946-08-21', '0952-08-26']
+Score: 1.0
+--------------------------------
+Question: What is the occupation of the brother of the aunt of the person whose date of birth is 0922-11-14?
+Result: ['museum curator', 'firefighter', 'paediatric nurse', 'forest manager', 'buyer', 'tourist information centre manager', 'plant breeder', 'recruitment consultant', 'secretary', 'environmental education officer', 'public relations account executive', 'magazine journalist', 'aid worker', 'environmental health practitioner']
+Answer: ['bookseller', 'building control surveyor', 'control and instrumentation engineer', 'immunologist', 'pathologist', 'therapeutic radiographer']
+Score: 0.0
+--------------------------------
+Question: What is the hobby of the grandparent of Sam Highsmith?
+Result: ['coin collecting', 'video game collecting']
+Answer: ['coin collecting', 'video game collecting']
+Score: 1.0
+--------------------------------
+Question: Who is the great-grandchild of the daughter-in-law of Rodolfo Eady?
+Result: ['Ashton Eady']
+Answer: ['Ashton Eady', 'Nicky Eady', 'Paul Fournier', 'Roosevelt Fournier', 'Selena Fournier']
+Score: 0.33333333333333337
+--------------------------------
+Question: How many male cousins does the cousin of the female first cousin once removed of Sara Leyva have?
+Result: ['0']
+Answer: ['0', '1']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many grandchildren does the grandfather of the niece of the parent of Sydney Miguel have?
+Result: ['6', '7']
+Answer: ['2', '6']
+Score: 0.5
+--------------------------------
+Question: Who is the husband of the person whose date of birth is 0954-03-04?
+Result: ['Information not available: no person with date of birth 0954-03-04 found in the dataset.']
+Answer: ['Eddy Moody', 'Gerard Stcyr', 'Gino Creech', 'Jakob Frost', 'Josef Seaman', 'Luca Beale', 'Quentin Rocha', 'Reyes Saez']
+Score: 0.0
+--------------------------------
+Question: How many male second cousins does the person whose occupation is advertising copywriter have?
+Result: ['7']
+Answer: ['0', '1', '2', '3', '4', '5', '7']
+Score: 0.25
+--------------------------------
+Question: How many siblings does the second uncle of Mario Roy have?
+Result: ['0']
+Answer: ['1']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the brother-in-law of Taneka Seely?
+Result: ['0987-08-22']
+Answer: ['0987-08-22']
+Score: 1.0
+--------------------------------
+Question: How many cousins does the female second cousin of the male second cousin of the person whose occupation is advertising copywriter have?
+Result: ['0', '3']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.33333333333333337
+--------------------------------
+Question: How many great-grandparents does Ilona Marquis have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: How many great-grandchildren does the grandparent of the mother-in-law of the person whose date of birth is 1048-03-26 have?
+Result: ['1']
+Answer: ['2', '4', '7']
+Score: 0.0
+--------------------------------
+Question: What is the hobby of the son of the female first cousin once removed of the nephew of Emory Trejo?
+Result: ['people-watching', 'teaching']
+Answer: ['sea glass collecting']
+Score: 0.0
+--------------------------------
+Question: How many female second cousins does the person whose hobby is aircraft spotting have?
+Result: ['3']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8']
+Score: 0.19999999999999998
+--------------------------------
+Question: How many children does the father of the sibling of Donnell Stamey have?
+Result: ['5']
+Answer: ['5']
+Score: 1.0
+--------------------------------
+Question: How many cousins does the male second cousin of the person whose hobby is air sports have?
+Result: ['0']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8']
+Score: 0.19999999999999998
+[WARNING] Retrieval timeout/error (attempt 1/2): HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30). Retrying in 1s...
+[WARNING] Retrieval timeout/error (attempt 1/2): HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30). Retrying in 1s...
+[ERROR] Retrieval failed after 2 attempts: HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30)
+[ERROR] Retrieval failed after 2 attempts: HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30)
+--------------------------------
+Question: What is the date of birth of the male second cousin of the grandchild of the grandparent of Monica Brotherton?
+Result: ['0946-06-08', '0882-08-16', '0907-01-15']
+Answer: ['0963-06-30', '0970-04-08', '0973-05-29']
+Score: 0.0
+[WARNING] Retrieval timeout/error (attempt 1/2): HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30). Retrying in 1s...
+[WARNING] Retrieval timeout/error (attempt 1/2): HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30). Retrying in 1s...
+[ERROR] Retrieval failed after 2 attempts: HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30)
+[ERROR] Retrieval failed after 2 attempts: HTTPSConnectionPool(host='julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run', port=443): Read timed out. (read timeout=30)
+--------------------------------
+Question: How many daughters-in-law does the person whose date of birth is 0946-07-14 have?
+Result: ['0', '1']
+Answer: ['0', '1', '2', '3']
+Score: 0.6666666666666666
+--------------------------------
+Question: What is the hobby of the parent of the sister-in-law of the person whose date of birth is 0961-11-22?
+Result: ['fossil hunting', 'color guard', 'seashell collecting', 'model aircraft']
+Answer: ['baton twirling', 'butterfly watching', 'button collecting', 'dodgeball', 'esports', 'fishkeeping', 'ice skating', 'learning', 'literature', 'microscopy', 'people-watching', 'video gaming']
+Score: 0.0
+--------------------------------
+Question: How many wives does the great-grandfather of the nephew of the person whose hobby is laser tag have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: How many friends does the friend of Emerson Bristow have?
+Result: ['4', '5']
+Answer: ['1', '5']
+Score: 0.5
+--------------------------------
+Question: How many siblings does the male second cousin of the person whose occupation is clinical research associate have?
+Result: ['2']
+Answer: ['0', '1', '2', '3', '4']
+Score: 0.33333333333333337
+--------------------------------
+Question: How many nieces does the parent of Sydney Miguel have?
+Result: ['3']
+Answer: ['0', '3']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many husbands does Nanette Tillis have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: Who is the person whose date of birth is 0907-08-25?
+Result: ['The person with the date of birth 0907-08-25 cannot be determined from the available data.']
+Answer: ['Angelo Dement', 'Babara Boatright', 'Bee Cofield', 'Chad Molloy', 'Darius Goings', 'Dino Caesar', 'Genny Bachman', 'Henrietta Hutchins', 'Joanne Abbate', 'Joetta Holly', 'Maranda Plascencia', 'Maria Hallman', 'Nathaniel Clapp', 'Omar Hester', 'Peter Parke']
+Score: 0.0
+--------------------------------
+Question: How many male first cousins once removed does the cousin of the daughter-in-law of Oleta Miller have?
+Result: ['3']
+Answer: ['3']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the grandfather of the niece of the parent of Sydney Miguel?
+Result: ['0897-12-09']
+Answer: ['0897-12-09', '0897-12-10']
+Score: 0.6666666666666666
+--------------------------------
+Question: Who is the great-uncle of Geraldine Ruch?
+Result: ['Stanley Ruch', 'Cole Ruch', 'Antony Ruch', 'Marshall Ruch', 'Walker Ruch']
+Answer: ['Stanley Ruch']
+Score: 0.33333333333333337
+--------------------------------
+Question: What is the hobby of the female second cousin of the great-grandson of Carlotta Freeland?
+Result: ['motorcycling', 'fishing', 'engineering']
+Answer: ['disc golf', 'motorcycling', 'movie memorabilia collecting', 'sports science']
+Score: 0.28571428571428575
+--------------------------------
+Question: How many fathers-in-law does the son-in-law of the friend of the grandson of Hazel Barnum have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: How many brothers does Douglass Libby have?
+Result: ['3']
+Answer: ['3']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the second aunt of Wesley Hasson?
+Result: ['checkers (draughts)']
+Answer: ['trapshooting', 'volleyball']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the aunt of the male cousin of the great-grandchild of Adelaida Brice?
+Result: ['1000-09-19', '0968-12-25']
+Answer: ['0995-06-22', '1000-09-19']
+Score: 0.5
+--------------------------------
+Question: What is the occupation of the father-in-law of the friend of Kermit Clapp?
+Result: ['retail manager', 'commercial horticulturist']
+Answer: ['commercial horticulturist', 'retail manager']
+Score: 1.0
+--------------------------------
+Question: What is the date of birth of the father of the husband of Nanette Tillis?
+Result: ['0989-05-26']
+Answer: ['0989-05-26']
+Score: 1.0
+--------------------------------
+Question: Who is the second aunt of Alan Denney?
+Result: ['Delpha Allison']
+Answer: ['Caitlin Shiver', 'Charissa Stlouis']
+Score: 0.0
+--------------------------------
+Question: Who is the child of the father-in-law of Joan Rocha?
+Result: ['Quentin Rocha', 'Tomas Rocha', 'Isabell Rocha', 'Sondra Kidder', 'Tosha Russ']
+Answer: ['Isabell Rocha', 'Quentin Rocha', 'Sondra Kidder', 'Tomas Rocha', 'Tosha Russ']
+Score: 1.0
+--------------------------------
+Question: Who is the brother of the aunt of the person whose date of birth is 0922-11-14?
+Result: ['Alvin Nickens', 'Duncan Nickens', 'Truman Nickens']
+Answer: ['Byron Shipley', 'Frederick Eldred', 'Mauricio Howes', 'Orval Stamey', 'Perry Dooley', 'Zachary Rosen']
+Score: 0.0
+--------------------------------
+Question: How many friends does the person whose occupation is animal nutritionist have?
+Result: ['4', '6', '7', '5', '2', '1']
+Answer: ['0', '1', '10', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.7058823529411764
+--------------------------------
+Question: How many female second cousins does the person whose hobby is geography have?
+Result: ['7']
+Answer: ['0', '1', '2', '3', '4', '5', '6', '7', '8']
+Score: 0.19999999999999998
+--------------------------------
+Question: How many children does Bryon Raymer have?
+Result: ['4']
+Answer: ['4']
+Score: 1.0
+--------------------------------
+Question: How many parents does the grandchild of the person whose date of birth is 0933-02-17 have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the nephew of the grandson of the person whose date of birth is 0918-01-17?
+Result: ['audiophile']
+Answer: ['fishkeeping', 'flower collecting and pressing', 'ghost hunting', 'hobby tunneling', 'knife collecting', 'metal detecting', 'motor sports', 'poker', 'pool', 'story writing']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the great-grandmother of the cousin of the person whose date of birth is 0945-06-12?
+Result: ['0934-09-09', '0865-11-14']
+Answer: ['0863-07-19', '0864-06-26', '0869-07-27', '0881-12-23']
+Score: 0.0
+--------------------------------
+Question: What is the occupation of the parent of the great-grandchild of the wife of Abraham Bowens?
+Result: ['barista', 'building surveyor']
+Answer: ['barista', 'building surveyor']
+Score: 1.0
+--------------------------------
+Question: Who is the great-grandson of the friend of the mother-in-law of the person whose date of birth is 0945-10-16?
+Result: ['Stacey Anders']
+Answer: ['Austin Soileau', 'Elliot Padron', 'Gerry French', 'Jamal Landry', 'Perry Casper', 'Victor Wegner', 'Vincent Maas', 'Wilson Wegner']
+Score: 0.0
+--------------------------------
+Question: Who is the granddaughter of the brother-in-law of Inez Jude?
+Result: ['Debi Harter', 'Adrianna Peters', 'Lynda Alverez', 'Sharee Benally', 'Teressa Alverez', 'Terrie Alverez', 'Danielle Jude', 'Ellen Jude']
+Answer: ['Adrianna Peters', 'Danielle Jude', 'Debi Harter', 'Ellen Jude', 'Lynda Alverez', 'Sharee Benally', 'Teressa Alverez', 'Terrie Alverez']
+Score: 1.0
+--------------------------------
+Question: How many siblings does Adalberto Osterman have?
+Result: ['4']
+Answer: ['4']
+Score: 1.0
+--------------------------------
+Question: How many friends does the female cousin of the cousin of the friend of Robt Lenoir have?
+Result: ['4']
+Answer: ['2', '3', '4', '5', '9']
+Score: 0.33333333333333337
+--------------------------------
+Question: How many fathers does the great-uncle of the sister-in-law of the person whose hobby is metal detecting have?
+Result: ['0', '1']
+Answer: ['1']
+Score: 0.6666666666666666
+--------------------------------
+Question: What is the hobby of the daughter-in-law of Rodolfo Eady?
+Result: ['trainspotting']
+Answer: ['trainspotting']
+Score: 1.0
+--------------------------------
+Question: How many male cousins does the great-grandchild of Adelaida Brice have?
+Result: ['2']
+Answer: ['1', '2']
+Score: 0.6666666666666666
+--------------------------------
+Question: How many nieces does the second aunt of the great-grandchild of Kennith Hylton have?
+Result: ['2', '7']
+Answer: ['3']
+Score: 0.0
+--------------------------------
+Question: How many friends does the great-grandson of the person whose occupation is facilities manager have?
+Result: ['6', '4', '9']
+Answer: ['0', '1', '10', '2', '3', '4', '5', '6', '7', '8', '9']
+Score: 0.42857142857142855
+--------------------------------
+Question: What is the hobby of the female cousin of the cousin of the friend of Robt Lenoir?
+Result: ['amateur astronomy']
+Answer: ['antiquing', 'biology', 'caving', 'digital hoarding', 'fishing', 'fishkeeping', 'learning', 'meteorology', 'science and technology studies']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the mother of the uncle of Bruno Robbins?
+Result: ['0874-01-24']
+Answer: ['0874-01-24']
+Score: 1.0
+--------------------------------
+Question: Who is the parent of the sister of the brother-in-law of Rowena Waddell?
+Result: ['Victoria Waddell', 'Gregory Waddell']
+Answer: ['Gregory Waddell', 'Victoria Waddell']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the grandchild of the great-grandchild of Forest Benner?
+Result: ['shortwave listening', 'slacklining', 'web design']
+Answer: ['audiophile', 'ephemera collecting', 'gymnastics', 'herping', 'lapel pins', 'learning', 'meteorology']
+Score: 0.0
+--------------------------------
+Question: Who is the child of Bryon Raymer?
+Result: ['Garrett Raymer', 'Johnathon Raymer', 'Rudolph Raymer', 'Alejandra Raymer']
+Answer: ['Alejandra Raymer', 'Garrett Raymer', 'Johnathon Raymer', 'Rudolph Raymer']
+Score: 1.0
+--------------------------------
+Question: Who is the friend of Karina Stoops?
+Result: ['Cortney Dodd', 'Rocco Laster']
+Answer: ['Cortney Dodd', 'Rocco Laster']
+Score: 1.0
+--------------------------------
+Question: How many brothers-in-law does Jillian Mcgrew have?
+Result: ['1']
+Answer: ['1']
+Score: 1.0
+--------------------------------
+Question: What is the occupation of the great-grandson of the wife of the great-grandfather of Andrea Dennard?
+Result: ['occupational hygienist']
+Answer: ['IT sales professional', 'best boy', 'customer service manager', 'medical secretary', 'printmaker', 'therapist']
+Score: 0.0
+--------------------------------
+Question: What is the date of birth of the granddaughter of the great-grandparent of Ilona Marquis?
+Result: ['1136-11-06']
+Answer: ['1136-11-06']
+Score: 1.0
+--------------------------------
+Question: How many great-grandchildren does the daughter-in-law of Rodolfo Eady have?
+Result: ['6']
+Answer: ['5']
+Score: 0.0
+--------------------------------
+Question: How many great-grandfathers does Deon Gall have?
+Result: ['2']
+Answer: ['2']
+Score: 1.0
+--------------------------------
+Question: What is the hobby of the friend of the sister of the son of Staci Nolasco?
+Result: ['footbag', 'quidditch', 'bodybuilding', 'sociology', 'chemistry', 'field hockey', 'metal detecting', 'stamp collecting', 'pinball']
+Answer: ['ballet dancing', 'chemistry', 'footbag', 'gongoozling', 'pinball', 'quidditch', 'railway journeys', 'stamp collecting', 'urban exploration']
+Score: 0.5555555555555556
+--------------------------------
+Question: How many siblings does the sibling of the sibling of Wilton Whitlow have?
+Result: ['4']
+Answer: ['4']
+Score: 1.0
+--------------------------------
+Question: How many sons-in-law does the friend of the grandson of Hazel Barnum have?
+Result: ['2']
+Answer: ['0', '1']
+Score: 0.0

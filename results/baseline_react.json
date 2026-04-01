@@ -20,6 +20,7 @@
     "settings": {
       "lm": "openai/gpt-4.1-mini",
       "max_tool_calls": 50
-    }
+    },
+    "dataset": "phantomwiki_test.json"
   }
   

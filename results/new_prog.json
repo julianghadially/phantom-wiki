@@ -18,5 +18,6 @@
     },
     "total_retrieval_calls": 2864,
     "program": "PhantomWikiReActPipeline",
-    "dataset": "phantomwiki_test_omitsuperlong.json"
+    "dataset": "phantomwiki_test_omitsuperlong.json",
+    "lm": "openai/gpt-4.1-mini"
   }

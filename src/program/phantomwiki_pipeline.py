@@ -6,10 +6,12 @@ COLBERT_URL = "https://julianghadially--colbert-server-phantom-wiki-colbertserv-
 
 
 class PhantomWikiReActPipeline(dspy.Module):
-    def __init__(self):
+    def __init__(self, model_name = "openai/gpt-5-mini"):
+        super().__init__()
+        self.lm = dspy.LM(model_name, cache=False)
         self.rm = CountingRM(dspy.ColBERTv2(url=COLBERT_URL))
         self.program = PhantomWikiReAct()
 
     def forward(self, question):
-        with dspy.context(rm=self.rm):
+        with dspy.context(rm=self.rm, lm=self.lm):
             return self.program(question=question)

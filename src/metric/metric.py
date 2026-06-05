@@ -39,10 +39,16 @@ def phantomwiki_f1(gold, pred, trace=None):
     return f1_score(pred_answers, gold_answers)
 
 
-def phantomwiki_f1_feedback(gold, pred, trace=None, pred_name=None, pred_trace=None):
-    """Answer-level F1 with textual feedback for GEPA."""
-    gold_answers = _to_list(gold.answer)
-    pred_answers = _to_list(getattr(pred, "answer", str(pred)))
+def phantomwiki_f1_feedback(output, answer, trace=None, pred_name=None, pred_trace=None, **kwargs):
+    """Answer-level F1 with textual feedback for GEPA.
+
+    Called by CodeEvolver's evaluator as
+    ``metric_fn(output=program_output, answer=row["answer"])``: ``output`` is the
+    program's ``dspy.Prediction`` and ``answer`` is the gold from the dataset row.
+    ``**kwargs`` absorbs any extra row columns the evaluator may pass.
+    """
+    gold_answers = _to_list(answer)
+    pred_answers = _to_list(getattr(output, "answer", str(output)))
     score = f1_score(pred_answers, gold_answers)
 
     # Parse prediction into set for detailed feedback

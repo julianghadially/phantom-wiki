@@ -8,9 +8,10 @@ class ExhaustiveInvestigationSignature(dspy.Signature):
 
     STEP 1 — IDENTIFY AND COLLECT ALL ANCHORS:
     - Named anchor (e.g., "Deon Gall"): use search_wiki with the person's name.
-    - Attribute anchor (date of birth, occupation, hobby, etc.): ALWAYS use find_all_by_attribute — NOT search_wiki. Multiple people share the same attribute. Collect ALL names from the results before investigating any chain.
-    - FORBIDDEN: stopping after finding the first person. Investigate EVERY anchor entity found.
-    - If an anchor chain leads to a dead end (e.g., no spouse found), DON'T give up — there are likely OTHER anchors. Use find_all_by_attribute again with a different phrasing to find more.
+    - Attribute anchor (person whose DOB/occupation/hobby is X): ALWAYS use find_all_by_attribute — NOT search_wiki. Multiple people share the same attribute. Collect ALL names from the results before investigating any chain.
+    - find_all_by_attribute is ONLY for DOB, occupation, hobby, or nationality lookups. Do NOT use it for names, surnames, or relationship lookups — use search_wiki for those.
+    - FORBIDDEN: stopping after finding the first matching person. Investigate EVERY anchor entity found.
+    - If an anchor chain leads to a dead end (e.g., no spouse found), DON'T give up — there are likely OTHER anchors with the same attribute. Use find_all_by_attribute again or search_wiki with the other anchor names.
 
     STEP 2 — INVESTIGATE EACH ANCHOR SYSTEMATICALLY:
     1. For EACH anchor, follow the relationship chain step by step.
@@ -18,25 +19,25 @@ class ExhaustiveInvestigationSignature(dspy.Signature):
     3. Track which branches you have already investigated vs. which still remain.
     4. Do NOT stop after finding 1-2 answers if the question asks for all members of a set.
 
-    STEP 3 — RELATIONSHIP SEMANTICS (read carefully):
+    STEP 3 — RELATIONSHIP SEMANTICS AND GENERATION COUNTING:
     - sister-in-law: your SPOUSE'S sister, OR your SIBLING'S wife — NOT your own sister
-    - mother-in-law: your SPOUSE'S mother
-    - grandmother/grandparent: your PARENT'S parent (TWO hops up — not one)
-    - great-aunt: your GRANDPARENT'S sister (three hops: you → parent → grandparent → sibling)
-    - great-grandchild: child of your grandchild (three hops down)
-    - second cousin: child of your parent's cousin
-    These are different from their one-hop counterparts — verify the hop count carefully.
+    - mother-in-law / father-in-law: your SPOUSE'S mother / father
+    - grandmother/grandparent: your PARENT'S parent (2 hops up)
+    - great-grandchild: child of your grandchild (3 hops down — must descend through grandchild first)
+    - great-aunt: your GRANDPARENT'S sister (3 hops total: you→parent→grandparent→their sibling)
+    - second cousin: child of your parent's first cousin
+    GENERATION RULE: If you ascend N hops to reach an ancestor, great-grandchildren of that ancestor are N hops BELOW THAT ANCESTOR. For example, if you go up 3 hops to reach the great-grandfather, the great-grandchildren are 3 hops below the great-grandfather (the same generation as the original person). You must search the children of the grandchildren of the ancestor — not the children of the ancestor.
 
     STEP 4 — COUNTING FORMAT:
     - "How many X does each Y have?" → return EACH count separately, not summed.
     - Example: person A has 2, person B has 5 → return ["2", "5"] NOT ["7"].
-    - For population queries (e.g., "how many friends does each biochemist have?"): use find_all_by_attribute to find multiple people, count for each, and return the DISTINCT set of counts observed.
+    - For population queries: use find_all_by_attribute to find multiple people, count for each, return the DISTINCT set of values observed.
 
     COMPLETENESS CHECK before finalizing:
-    - Did I use find_all_by_attribute for ALL attribute-anchored lookups?
+    - Did I use find_all_by_attribute for ALL DOB/occupation/hobby attribute lookups?
     - Did I investigate EVERY anchor entity found (not just the first)?
     - Did I search ALL entities at each intermediate level (all children, all siblings, all friends)?
-    - Am I confident in the relationship semantics for each hop?
+    - Did I count generations correctly — am I at the right level of the family tree?
     """
 
     question: str = dspy.InputField()
@@ -88,6 +89,20 @@ class PhantomWikiReAct(dspy.Module):
         """
         atype = attribute_type.lower().strip()
         aval = attribute_value.strip()
+
+        # Validate attribute type — only supported for DOB, occupation, hobby, nationality
+        SUPPORTED_TYPES = {
+            'dob', 'date of birth', 'birth date', 'born', 'birthday',
+            'occupation', 'job', 'career', 'profession',
+            'hobby', 'hobbies', 'interest',
+            'nationality', 'citizenship', 'country',
+        }
+        if atype not in SUPPORTED_TYPES:
+            return (
+                f"[Error: find_all_by_attribute only supports DOB, occupation, hobby, or nationality lookups. "
+                f"You provided attribute_type='{attribute_type}', which is not supported. "
+                f"Use search_wiki instead for name/relationship lookups.]"
+            )
 
         # Build 3 diverse query phrasings
         if atype in ('dob', 'date of birth', 'birth date', 'born', 'birthday'):

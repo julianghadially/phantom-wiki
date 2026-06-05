@@ -184,12 +184,12 @@ print(result.answer)
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: ReAct Agent with ExhaustiveInvestigationSignature, k=15 Retrieval, Multi-Answer Recall Optimization
+## ARCHITECTURE TITLE: ReAct Agent with find_all_by_attribute Tool, ExhaustiveInvestigationSignature (4-Step), k=15 Retrieval
 
 ## ARCHITECTURE SUMMARY:
 The system is a ReAct-based agentic question answering pipeline built with DSPy for the PhantomWiki dataset. The top-level orchestrator `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) configures ColBERTv2 retrieval and an OpenAI LM, then delegates all question answering to `PhantomWikiReAct` (`src/program/phantomwiki_module.py`).
 
-`PhantomWikiReAct` drives a `dspy.ReAct` agent bound to `ExhaustiveInvestigationSignature`, which instructs the model to exhaustively enumerate all correct answers for multi-answer questions. The agent iteratively calls `search_wiki` (backed by `dspy.Retrieve(k=15)`) to gather evidence before finalizing a `list[str]` answer.
+`PhantomWikiReAct` drives a `dspy.ReAct` agent bound to `ExhaustiveInvestigationSignature`, which provides a 4-step investigation protocol covering anchor identification, systematic fan-out, precise relationship semantics, and counting format rules. The agent has two tools: `search_wiki` for name-based lookups and `find_all_by_attribute` for attribute-anchored searches (DOB, occupation, hobby) that issue 3 differently-phrased queries and deduplicate results to return the full set of matching people. The agent runs up to 50 iterations with `dspy.Retrieve(k=15)`.
 
 Performance is measured by `phantomwiki_f1_feedback` in `src/metric/metric.py`, which computes token-level F1 between the predicted and ground-truth answers.
 
@@ -198,13 +198,16 @@ Performance is measured by `phantomwiki_f1_feedback` in `src/metric/metric.py`, 
 `PhantomWikiReActPipeline` is a `dspy.Module` subclass. Its `__init__` configures a `CountingRM`-wrapped `ColBERTv2` retriever and a `gpt-4.1-mini` LM (cache=False). Its `forward` method runs `PhantomWikiReAct` inside a `dspy.context` that injects these models, returning a `dspy.Prediction` with an `answer: list[str]` field.
 
 **ReAct agent module** — `src/program/phantomwiki_module.py`
-`PhantomWikiReAct` wraps `dspy.ReAct` with `ExhaustiveInvestigationSignature` and a single `search_wiki` tool. The signature's detailed docstring instructs the agent to: identify all key entities in the question chain, search each family member individually, enumerate ALL correct answers (not just the first), verify relationships only from retrieved text, and handle counting questions by returning per-person counts separately. The `answer` output field is typed `list[str]` with a description emphasizing exhaustiveness. The agent runs up to 50 iterations.
+`PhantomWikiReAct` wraps `dspy.ReAct` with `ExhaustiveInvestigationSignature` and two tools: `search_wiki` and `find_all_by_attribute`. The signature's 4-step docstring instructs the agent to: (1) identify all anchors and use `find_all_by_attribute` for attribute-anchored queries, (2) systematically investigate every anchor and fan out to all relatives/friends, (3) apply precise multi-hop relationship semantics (sister-in-law, grandmother, great-aunt, etc.), and (4) return per-entity counts separately. The `answer` output field is typed `list[str]` emphasizing exhaustiveness.
+
+**Tools** — `search_wiki` and `find_all_by_attribute`
+`search_wiki` retrieves k=15 passages for name-based queries. `find_all_by_attribute` addresses the single-entity assumption failure mode: given an `attribute_type` (dob/occupation/hobby/etc.) and `attribute_value`, it builds 3 differently-phrased queries, calls `dspy.Retrieve(k=15)` for each, and returns all deduplicated passages with a count header — ensuring all people sharing an attribute are discovered.
 
 **Retrieval** — `dspy.Retrieve(k=15)` inside `PhantomWikiReAct`
-Each `search_wiki` call retrieves 15 passages from the configured ColBERTv2 index, joined by `\n\n---\n\n` separators. The increased k (up from 7) improves recall for multi-hop family-tree questions where relevant passages are spread across many documents.
+Each tool call retrieves 15 passages from the configured ColBERTv2 index. `find_all_by_attribute` can return up to 45 unique passages across its 3 query phrasings.
 
 **Metric** — `src/metric/metric.py`
 `phantomwiki_f1_feedback(example, prediction)` normalises both the predicted answer and ground-truth by lowercasing, removing punctuation and articles, then computes token-level F1 in [0, 1].
 
-**Data flow**: `question` → `PhantomWikiReAct.react` (ReAct loop, up to 50 iters) → iterative `search_wiki` calls (k=15 ColBERTv2 retrieval) → `ExhaustiveInvestigationSignature` output `answer: list[str]` → `phantomwiki_f1_feedback` for evaluation.
+**Data flow**: `question` → `PhantomWikiReAct.react` (ReAct loop, up to 50 iters) → iterative `search_wiki` / `find_all_by_attribute` calls (k=15 ColBERTv2 retrieval, 3 phrasings for attribute searches) → `ExhaustiveInvestigationSignature` output `answer: list[str]` → `phantomwiki_f1_feedback` for evaluation.
 ```

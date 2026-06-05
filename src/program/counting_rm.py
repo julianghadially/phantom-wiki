@@ -1,12 +1,11 @@
 import sys
-import time
 
 import dspy
 import requests
 
 
 class CountingRM(dspy.Retrieve):
-    def __init__(self, rm, timeout=30, max_retries=1):
+    def __init__(self, rm, timeout=60, max_retries=2):
         super().__init__()
         self.rm = rm
         self.call_count = 0
@@ -46,9 +45,7 @@ class CountingRM(dspy.Retrieve):
                 return self.rm(query_or_queries, k=k, **kwargs)
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 if attempt < self.max_retries:
-                    wait = 2 ** attempt
-                    print(f"[WARNING] Retrieval timeout/error (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {wait}s...", file=sys.stderr)
-                    time.sleep(wait)
+                    print(f"[WARNING] Retrieval timeout/error (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying...", file=sys.stderr)
                 else:
                     print(f"[ERROR] Retrieval failed after {self.max_retries + 1} attempts: {e}", file=sys.stderr)
                     raise

@@ -18,31 +18,37 @@ class ExhaustiveInvestigationSignature(dspy.Signature):
     2. When a page lists multiple relatives (children, siblings, friends), write down ALL names and search EACH one individually.
     3. Track which branches you have already investigated vs. which still remain.
     4. Do NOT stop after finding 1-2 answers if the question asks for all members of a set.
+    5. NEVER repeat the same search query — if a query returns no useful result, try a DIFFERENT phrasing or search a DIFFERENT person's name.
 
     STEP 3 — RELATIONSHIP SEMANTICS AND GENERATION COUNTING:
+    - uncle: your PARENT's brother
+    - great-uncle / second uncle: your GRANDPARENT's brother (your parent's uncle — go up 2 hops, then sibling)
     - sister-in-law: your SPOUSE'S sister, OR your SIBLING'S wife — NOT your own sister
     - mother-in-law / father-in-law: your SPOUSE'S mother / father
-    - grandmother/grandparent: your PARENT'S parent (2 hops up)
+    - grandparent / grandfather / grandmother: your PARENT'S parent (exactly 2 hops up)
+    - great-grandfather / great-grandparent: your GRANDPARENT'S parent (exactly 3 hops up — NOT the same as grandfather which is 2 hops)
     - great-grandchild: child of your grandchild (3 hops down — must descend through grandchild first)
     - great-aunt: your GRANDPARENT'S sister (3 hops total: you→parent→grandparent→their sibling)
     - second cousin: child of your parent's first cousin
-    GENERATION RULE: If you ascend N hops to reach an ancestor, great-grandchildren of that ancestor are N hops BELOW THAT ANCESTOR. For example, if you go up 3 hops to reach the great-grandfather, the great-grandchildren are 3 hops below the great-grandfather (the same generation as the original person). You must search the children of the grandchildren of the ancestor — not the children of the ancestor.
+    GENERATION RULE: Count hops carefully. grandfather = 2 hops up. great-grandfather = 3 hops up. If you ascend N hops to reach an ancestor, great-grandchildren of that ancestor are N hops BELOW THAT ANCESTOR (same generation as the original person).
 
-    STEP 4 — COUNTING FORMAT:
-    - "How many X does each Y have?" → return EACH count separately, not summed.
-    - Example: person A has 2, person B has 5 → return ["2", "5"] NOT ["7"].
-    - For population queries: use find_all_by_attribute to find multiple people, count for each, return the DISTINCT set of values observed.
+    STEP 4 — COUNTING FORMAT (AGGREGATION QUESTIONS):
+    - "How many X does each Y have?" questions require AGGREGATION: (1) find ALL members of the Y population, (2) count X for EACH member individually, (3) DEDUPLICATE — return ONLY the DISTINCT unique count values.
+    - Example: if 8 people have counts [1, 0, 1, 3, 0, 2, 3, 1] → return ["0", "1", "2", "3"] (4 distinct values), NOT ["1", "0", "1", "3", "0", "2", "3", "1"] (8 raw counts).
+    - A population of 20-40 people typically yields only 4-8 distinct count values. Do NOT return one value per person.
+    - WRONG: raw per-person list ["1","0","1","3","0","2"] | WRONG: sum ["7"] | RIGHT: distinct set ["0","1","2","3"]
 
     COMPLETENESS CHECK before finalizing:
     - Did I use find_all_by_attribute for ALL DOB/occupation/hobby attribute lookups?
     - Did I investigate EVERY anchor entity found (not just the first)?
     - Did I search ALL entities at each intermediate level (all children, all siblings, all friends)?
     - Did I count generations correctly — am I at the right level of the family tree?
+    - For counting/aggregation questions: did I DEDUPLICATE — return DISTINCT count values, NOT raw per-person counts?
     """
 
     question: str = dspy.InputField()
     answer: list[str] = dspy.OutputField(
-        desc="Complete list of ALL correct answers. Be exhaustive—include every valid answer found, not just the first few. For counting questions, return each count as a separate string. Return [] only if the entity truly does not exist."
+        desc="Complete list of ALL correct answers. Be exhaustive—include every valid answer found, not just the first few. For aggregation/counting questions ('how many X does each Y have?'), return ONLY the DISTINCT unique count values as separate strings — NOT raw per-person counts. Return [] only if the entity truly does not exist."
     )
 
 

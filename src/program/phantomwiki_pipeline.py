@@ -1,4 +1,5 @@
 import dspy
+import src.tracing_setup  # noqa: F401  -- enables DSPy->OTEL spans on import
 from src.program.counting_rm import CountingRM
 from src.program.phantomwiki_module import PhantomWikiReAct
 

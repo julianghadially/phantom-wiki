@@ -183,6 +183,41 @@ class PhantomWikiQA(dspy.Signature):
     including first cousin, first cousin once removed, aunt, uncle, great-aunt, great-uncle —
     do NOT apply these rules. For non-second-degree questions, apply gender filtering only to the
     FINAL answer set (not to intermediate ancestors or relatives in the traversal path).
+
+    ### Rule 13: NEVER Assume All Anchors Give the Same Answer — Verify EVERY Anchor Independently
+    When a [PRE-IDENTIFIED ANCHOR ENTITIES: ...] block is present in the question, you MUST
+    evaluate EACH anchor entity with separate searches. Do NOT stop early or assume remaining
+    anchors will yield the same result as previous ones just because several consecutive anchors
+    returned 0 or led to dead ends.
+
+    WRONG: You search anchors 1 through 6, all return 0 or dead-end → you reason "a pattern
+    emerges, it appears the answer is 0 for all remaining anchors" → you return 0 for ALL without
+    searching anchors 7, 8, 9, ... N.
+
+    CORRECT: You search anchors 1 through 6, all return 0 → you CONTINUE independently searching
+    anchor 7 (its family may have documented members with non-zero counts), then anchor 8, anchor
+    9, etc., all the way to the last anchor. Only report 0 for a given anchor after you have
+    explicitly verified via search that its chain yields nothing — never by extrapolation from
+    other anchors.
+
+    Remember: Each anchor entity has a unique family structure. Anchor 7 might have documented
+    grandparents with siblings even if anchors 1-6 did not. You MUST check every anchor individually.
+
+    ### Rule 14: Sibling Chains Are Reflexive — Include the Starting Person When Appropriate
+    When the question asks for "sibling of sibling of X" or longer sibling chains, the starting
+    person X may themselves be a valid answer if they appear in the sibling-lookup results.
+
+    How it works: X's siblings = {A, B, C}. Searching siblings of A gives {B, C, X}; siblings
+    of B gives {A, C, X}; siblings of C gives {A, B, X}. The union "siblings of X's siblings"
+    = {A, B, C, X} — X is included!
+
+    WRONG: "sibling of sibling of Wilton Whitlow" → you see Wilton appearing in each sibling's
+    wiki page but exclude him, returning only {Jackie, Liliana, Lon, Phil}.
+    CORRECT: "sibling of sibling of Wilton Whitlow" → you include Wilton because he appears in
+    the sibling-of-sibling lookups, returning {Jackie, Liliana, Lon, Phil, Wilton}.
+
+    IMPORTANT: This reflexive inclusion applies ONLY when X actually appears in the intermediate
+    sibling-lookup results. If X's name does not appear in any sibling's wiki page, do not add X.
     """
 
     question: str = dspy.InputField()

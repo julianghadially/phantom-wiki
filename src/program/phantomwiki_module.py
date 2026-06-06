@@ -6,6 +6,20 @@ class AnchorEnumerationQA(dspy.Signature):
 
     Your ONLY goal is exhaustive entity enumeration — do NOT try to answer the question.
 
+    ### ABSOLUTE PROHIBITION — VIOLATION TERMINATES THE TASK:
+    You MUST NOT perform ANY of the following actions:
+    - Traverse family trees of found people (no searching for their children, parents, siblings, cousins, grandparents, great-grandchildren, etc.)
+    - Look up relatives, friends, or any person who is NOT directly stated as having the target attribute
+    - Compute any family relationship counts or distances
+    - Resolve the downstream question (e.g., do NOT look up cousins of found people just because the question asks about cousins)
+    - Include in your anchor_entities list ANY person who does not DIRECTLY have the stated occupation, hobby, or date of birth
+
+    If you find yourself searching for "cousins of X", "children of Y", "grandchildren of Z", "friends of W", or ANY relationship of a found person, you have violated this prohibition — STOP and return only the direct attribute matches found so far.
+
+    EXAMPLE OF CORRECT BEHAVIOR: Question asks "How many cousins does the great-grandchild of the video editor have?"
+    - CORRECT: Search for all video editors. Return their names. Done.
+    - WRONG: Search for video editors, then search for Randell Kaufmann's great-grandchildren, then search for their cousins.
+
     ### How to Find All Anchors:
 
     **Attribute-based anchors** (occupation, hobby, date of birth):
@@ -35,10 +49,12 @@ class AnchorEnumerationQA(dspy.Signature):
     """
     question: str = dspy.InputField()
     anchor_entities: list[str] = dspy.OutputField(
-        desc="ALL person names found that match the anchor description. "
+        desc="ALL person names found that DIRECTLY match the anchor description. "
              "For attribute-based anchors (occupation/hobby/DOB), include EVERY person found "
              "with that exact attribute. Expect 5-40+ names. "
              "For name-based anchors, include only the named person. "
+             "CRITICAL: Include ONLY people who directly have the stated attribute — "
+             "do NOT include their relatives, friends, cousins, or any intermediate traversal results. "
              "Search multiple times with different phrasings to be exhaustive."
     )
 
@@ -130,6 +146,35 @@ class PhantomWikiQA(dspy.Signature):
     - If a parent has no documented parents, they have 0 grandparents
     - Count only what is EXPLICITLY documented; never infer from real-world biology
     - "No record found" means the count is 0 for missing relationships
+
+    ### Rule 11: Multi-Referent Chains — Compute Per Entity, NEVER Aggregate
+    Many questions pass through MULTIPLE intermediate entities (e.g., "How many cousins does
+    the friend of X have?" — X may have several friends, each with their own cousin count).
+    When traversal yields multiple entities at any step, you MUST:
+    1. Enumerate ALL entities at that step — do NOT pick just one representative
+    2. Compute the answer INDEPENDENTLY for EACH entity using separate searches
+    3. Return the COMPLETE SET of distinct per-entity values as separate answer items
+    CRITICAL: Do NOT sum counts across entities. If 3 entities have [0, 1, 2] results
+    respectively, return ["0", "1", "2"] — NOT "3" (a sum) and NOT just "2" (one value).
+    This applies even when no anchor list was provided: whenever your traversal discovers
+    multiple entities, treat each independently and collect ALL their answers.
+
+    ### Rule 12: Second-Degree Relationships — Exact Definitions
+    "Second aunt" / "second uncle" = a sibling of one of your GRANDPARENTS (not your parent).
+    - Search ALL FOUR grandparents (paternal grandfather, paternal grandmother, maternal
+      grandfather, maternal grandmother) and find EACH grandparent's siblings
+    - Strict gender filter: second uncle = MALE grandparent sibling only;
+      second aunt = FEMALE grandparent sibling only. Never count opposite-gender siblings.
+    "Second cousin" = your grandparent's sibling's grandchild (NOT parent's sibling's child).
+    - Full path: you → parent → grandparent → grandparent's sibling → their child → their grandchild
+    - First cousin (parent's sibling's child) is a DIFFERENT relationship — do not confuse them.
+
+    **IMPORTANT SCOPE CAVEAT**: The above definitions, the 'search all 4 grandparents' instruction,
+    and the strict gender-filter rules apply ONLY to questions that explicitly use the terms
+    'second aunt', 'second uncle', or 'second cousin'. For ALL other relationship types —
+    including first cousin, first cousin once removed, aunt, uncle, great-aunt, great-uncle —
+    do NOT apply these rules. For non-second-degree questions, apply gender filtering only to the
+    FINAL answer set (not to intermediate ancestors or relatives in the traversal path).
     """
 
     question: str = dspy.InputField()
@@ -148,12 +193,12 @@ class PhantomWikiQA(dspy.Signature):
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
-        self.retrieve = dspy.Retrieve(k=10)
+        self.retrieve = dspy.Retrieve(k=15)
         self.anchor_retrieve = dspy.Retrieve(k=15)  # wider retrieval for anchor enumeration
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
             tools=[self.search_wiki],
-            max_iters=50,
+            max_iters=65,
         )
         self.anchor_finder = dspy.ReAct(
             signature=AnchorEnumerationQA,

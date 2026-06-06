@@ -176,29 +176,49 @@ class PhantomWikiReAct(dspy.Module):
         results = self.anchor_retrieve(query)
         return "\n\n".join(results.passages)
 
+    # Phrases that indicate attribute-based anchors (requiring exhaustive enumeration)
+    _ATTRIBUTE_ANCHOR_PHRASES = [
+        "whose occupation is", "whose hobby is", "whose date of birth is",
+        "with occupation", "with hobby", "born on", "date of birth",
+        "occupation is", "hobby is",
+    ]
+
+    def _is_attribute_anchored(self, question: str) -> bool:
+        """Return True if the question uses an attribute-based anchor (occupation/hobby/DOB)
+        rather than a name-based anchor. Attribute-anchored questions benefit from exhaustive
+        enumeration because multiple entities may share the same attribute value."""
+        q_lower = question.lower()
+        return any(phrase in q_lower for phrase in self._ATTRIBUTE_ANCHOR_PHRASES)
+
     def forward(self, question):
-        # Phase 1: Exhaustive anchor enumeration
-        try:
-            anchor_result = self.anchor_finder(question=question)
-            anchors = list(getattr(anchor_result, 'anchor_entities', []) or [])
-            anchors = [a.strip() for a in anchors if a and a.strip()]
-        except Exception:
-            anchors = []
+        # Phase 1: Exhaustive anchor enumeration — only for attribute-based anchors
+        # (occupation, hobby, DOB). Skip for name-based questions to avoid misdirection.
+        anchors = []
+        if self._is_attribute_anchored(question):
+            try:
+                anchor_result = self.anchor_finder(question=question)
+                anchors = list(getattr(anchor_result, 'anchor_entities', []) or [])
+                anchors = [a.strip() for a in anchors if a and a.strip()]
+            except Exception:
+                anchors = []
+
+        # Cap anchor list to avoid overloading the main agent
+        anchors = anchors[:20]
 
         # Phase 2: Augment question with discovered anchor list
         if len(anchors) > 1:
             anchors_str = ", ".join(anchors)
             augmented_question = (
                 f"{question}\n\n"
-                f"[ANCHOR SEARCH COMPLETE: Found {len(anchors)} entities matching the anchor "
-                f"description: {anchors_str}. "
-                f"You MUST process EACH of these {len(anchors)} entities and include all "
-                f"results in your answer.]"
+                f"[PRE-IDENTIFIED ANCHOR ENTITIES: {anchors_str}. "
+                f"These are people matching the anchor description — they are NOT the answer. "
+                f"Process EACH one and compute the required value. "
+                f"Return ALL results in your answer list.]"
             )
         elif len(anchors) == 1:
             augmented_question = (
                 f"{question}\n\n"
-                f"[ANCHOR SEARCH HINT: The anchor entity is: {anchors[0]}]"
+                f"[ANCHOR ENTITY CONFIRMED: {anchors[0]}]"
             )
         else:
             augmented_question = question

@@ -16,9 +16,17 @@ class AnchorEnumerationQA(dspy.Signature):
 
     If you find yourself searching for "cousins of X", "children of Y", "grandchildren of Z", "friends of W", or ANY relationship of a found person, you have violated this prohibition — STOP and return only the direct attribute matches found so far.
 
-    EXAMPLE OF CORRECT BEHAVIOR: Question asks "How many cousins does the great-grandchild of the video editor have?"
-    - CORRECT: Search for all video editors. Return their names. Done.
-    - WRONG: Search for video editors, then search for Randell Kaufmann's great-grandchildren, then search for their cousins.
+    ### CRITICAL — What to search for vs. what NOT to search for:
+    Your search queries must contain ONLY the anchor attribute (the occupation, hobby, or date of birth).
+    Do NOT include relationship words from the question (cousin, grandchild, sibling, great-grandparent, friend, etc.) in your search queries.
+
+    CORRECT EXAMPLES:
+    - Question: "How many great-grandparents does the female cousin of the tea bag collector have?"
+      → Search: "tea bag collecting hobby" / "hobby tea bag collecting" / "tea bag collector person"
+      → DO NOT search: "female cousin tea bag collecting" ← WRONG (contains relationship word "cousin")
+    - Question: "How many cousins does the great-grandchild of the video editor have?"
+      → Search: "video editor occupation" / "occupation video editor wiki"
+      → DO NOT search: "video editor great-grandchild" ← WRONG (contains relationship word)
 
     ### How to Find All Anchors:
 

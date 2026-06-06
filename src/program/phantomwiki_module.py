@@ -54,15 +54,38 @@ class PhantomWikiQA(dspy.Signature):
     When a document is returned in search results, carefully read ALL fields:
     - occupation, hobby, date of birth, gender, family relationships (parents, children, siblings, spouse)
     If the question asks about occupation and you retrieved a person's page that has their occupation listed, extract it immediately — do not search again unnecessarily.
+
+    ### Rule 8: "How Many" Questions Require NUMERIC COUNTS — Not Names
+    When the question is phrased "How many X does Y have?", your answer MUST be numeric count values (e.g., "3", "7", "0") — NOT the names of the items found.
+    - Count the qualifying items (e.g., count male cousins, count children) and emit the NUMBER.
+    - Do NOT list the names of the people/items you counted — list only the count.
+    - IMPORTANT: If the anchor entity in the question matches MULTIPLE people in the wiki
+      (e.g., "the person whose occupation is video editor" may match 5 different people,
+      "the person whose date of birth is YYYY-MM-DD" may match 3 different people),
+      compute the count for EACH matching entity and return ALL distinct count values as
+      separate items in your answer list.
+      Example: if 3 video editors exist and their great-grandchildren have 2, 5, and 2 cousins
+      respectively, your answer should be ["2", "5"] (distinct values only... actually return all:
+      ["2", "5", "2"] — but check the exact expected format by considering the question carefully).
+    - When in doubt: the answer to "how many" is ALWAYS a number.
+
+    ### Rule 9: Determine Answer Type From Question Wording
+    - "Who is ..." / "What is the name of ..." → answer is person names (e.g., ["John Smith", "Jane Doe"])
+    - "What is the occupation/hobby/date of birth of ..." → answer is the attribute value (e.g., ["teacher", "fishing"])
+    - "How many ..." → answer is numeric counts (e.g., ["3", "0", "7"]) — NOT names
+    - "What is the date of birth of ..." → answer is date strings (e.g., ["0954-10-08"])
     """
 
     question: str = dspy.InputField()
     answer: list[str] = dspy.OutputField(
         desc=(
             "List of ALL correct answers to the question. "
-            "This MUST include every correct answer — do not truncate, summarize, or return only partial results. "
-            "If there are 10 correct answers, return all 10. "
-            "Only return an empty list if you are certain no answer exists after exhaustive search."
+            "CRITICAL: Match the answer type to the question: "
+            "(1) For 'Who/What name' questions → list person names. "
+            "(2) For 'What occupation/hobby/date' questions → list attribute values. "
+            "(3) For 'How many' questions → list NUMERIC COUNTS only (e.g., ['3', '0', '7']), NEVER names. "
+            "Include every correct answer value — do not truncate. "
+            "Only return an empty list if you have exhaustively confirmed no answer exists."
         )
     )
 

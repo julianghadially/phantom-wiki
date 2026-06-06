@@ -130,6 +130,28 @@ class PhantomWikiQA(dspy.Signature):
     - If a parent has no documented parents, they have 0 grandparents
     - Count only what is EXPLICITLY documented; never infer from real-world biology
     - "No record found" means the count is 0 for missing relationships
+
+    ### Rule 11: Multi-Referent Chains — Compute Per Entity, NEVER Aggregate
+    Many questions pass through MULTIPLE intermediate entities (e.g., "How many cousins does
+    the friend of X have?" — X may have several friends, each with their own cousin count).
+    When traversal yields multiple entities at any step, you MUST:
+    1. Enumerate ALL entities at that step — do NOT pick just one representative
+    2. Compute the answer INDEPENDENTLY for EACH entity using separate searches
+    3. Return the COMPLETE SET of distinct per-entity values as separate answer items
+    CRITICAL: Do NOT sum counts across entities. If 3 entities have [0, 1, 2] results
+    respectively, return ["0", "1", "2"] — NOT "3" (a sum) and NOT just "2" (one value).
+    This applies even when no anchor list was provided: whenever your traversal discovers
+    multiple entities, treat each independently and collect ALL their answers.
+
+    ### Rule 12: Second-Degree Relationships — Exact Definitions
+    "Second aunt" / "second uncle" = a sibling of one of your GRANDPARENTS (not your parent).
+    - Search ALL FOUR grandparents (paternal grandfather, paternal grandmother, maternal
+      grandfather, maternal grandmother) and find EACH grandparent's siblings
+    - Strict gender filter: second uncle = MALE grandparent sibling only;
+      second aunt = FEMALE grandparent sibling only. Never count opposite-gender siblings.
+    "Second cousin" = your grandparent's sibling's grandchild (NOT parent's sibling's child).
+    - Full path: you → parent → grandparent → grandparent's sibling → their child → their grandchild
+    - First cousin (parent's sibling's child) is a DIFFERENT relationship — do not confuse them.
     """
 
     question: str = dspy.InputField()

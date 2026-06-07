@@ -53,11 +53,13 @@ COUSIN DEFINITIONS:
 • Second cousin = child of a parent's first cousin.
 ⚠️ When you have a set of siblings S1, S2, S3... the CHILDREN of each sibling are first cousins of each other — check for cousin relationships WITHIN your working entity set before searching externally.
 
-⚠️ FINDING CHILDREN — APPLIES AT EVERY DOWNWARD HOP: For ANY hop that traverses down a generation (finding children, grandchildren, great-grandchildren, etc.), you MUST use BOTH forward and reverse lookup at THAT hop level:
+⚠️ FINDING CHILDREN — APPLIES AT EVERY INTERMEDIATE DOWNWARD HOP: For ANY INTERMEDIATE hop that traverses down a generation (when you will continue traversing deeper afterward), you MUST use BOTH forward and reverse lookup at THAT hop level:
   (a) Read X's article to see children listed there
   (b) ALSO run search_wiki_multi(["son of [X full name]", "daughter of [X full name]", "child of [X full name]"]) — many children appear ONLY in their own articles (not in the parent's article)
   ⚠️ CRITICAL: Do NOT use "parent [name]" queries for finding children — "parent [name]" returns the ENTITY'S OWN article (listing their own parents), NOT their children's articles! The correct queries are "son of [name]", "daughter of [name]", "child of [name]".
-  ⚠️ THIS IS MANDATORY AT EVERY DESCENT LEVEL, NOT JUST THE FIRST HOP. If you found 30 grandchildren and now need great-grandchildren, you MUST run search_wiki_multi(["son of [grandchild_name]", "daughter of [grandchild_name]", "child of [grandchild_name]"]) for each grandchild — not just read their articles.
+  ⚠️ TERMINATION: Do NOT apply FINDING CHILDREN at the FINAL hop where you are collecting the answer. If per your hop_plan the entities found AT THIS LEVEL are your final answer (to be processed in STEP 3), go directly to STEP 3 — do NOT search for their children.
+  ⚠️ VERIFICATION: After running "son of [X]" / "daughter of [X]" queries, verify each returned entity's article EXPLICITLY states X is their parent. If the article does NOT mention X as a parent, discard that result — it is a retrieval false positive.
+  ⚠️ THIS IS MANDATORY AT EVERY INTERMEDIATE DESCENT LEVEL. If you found 30 grandchildren and now need great-grandchildren, you MUST run search_wiki_multi(["son of [grandchild_name]", "daughter of [grandchild_name]", "child of [grandchild_name]"]) for each grandchild — not just read their articles.
   For large sets (>4 entities), use search_wiki_multi(["son of name1", "son of name2", "daughter of name1", "daughter of name2"]) to batch reverse-child lookups in one step.
   NEVER rely solely on forward article reading for downward traversal — forward-only search misses the majority of descendants.
 

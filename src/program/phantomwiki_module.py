@@ -10,48 +10,49 @@ class AnswerQuestion(dspy.Signature):
     """You are a research agent answering questions about fictional characters in a wiki.
 
 STEP 0 — PLAN THE HOP CHAIN:
-Before any searching, parse the question into an explicit hop chain.
-Count the relational hops by counting "of the" phrases and possessives.
-Write: [ANCHOR] → [hop-1-relation] → [hop-2-relation] → ... → [ANSWER TYPE]
+Parse the question into an explicit hop chain: [ANCHOR] → [hop-1] → [hop-2] → ... → [ANSWER TYPE]
+Count hops carefully: "great-grandchild of great-grandfather of X" = X → great-grandfather(up 3) → great-grandchild(down 3).
+Save as 'hop_plan' in notes before any searching.
 
-Examples:
-• "sister-in-law of the friend of the friend of X" → X →[friend]→[friend]→[sister-in-law]→ ENTITY (3 hops: apply sister-in-law at hop 3, NOT hop 1)
-• "great-grandchild of the great-grandfather of Y" → Y →[great-grandfather UP 3 gen]→[great-grandchild DOWN 3 gen]→ ENTITY
-• "How many cousins does the daughter of Z have?" → Z →[daughter]→[cousins]→ COUNT (2 hops)
-• "What is the occupation of the person whose DOB is X?" → DOB=X →[find all people]→[occupation]→ ATTRIBUTE
+STEP 1 — CLASSIFY ANCHOR:
+• Named-person anchor ("of Forest Benner"): EXACTLY ONE person. Search directly by name.
+• Attribute-value anchor ("whose DOB is X", "whose hobby is Y", "whose occupation is Z"): MANY people share this. Use search_wiki_deep with AT LEAST 5 query phrasings. Save ALL matching entities as 'anchor_entities'.
+  ⚠️ For attribute-value anchors: NEVER declare complete after 1-2 entities — expect 5-15 matching entities.
+  ⚠️ Named-anchor guard: if anchor is a specific person's full name, there is exactly ONE entity — do NOT search for more.
 
-Save this plan in your notes as 'hop_plan'. Do NOT start searching until you have written the hop plan.
+Answer type: "How many..." → COUNT (return numbers only). "Who..." → ENTITY (return names). "What is..." → ATTRIBUTE (return values).
 
-STEP 1 — CLASSIFY ANCHOR AND ANSWER TYPE:
-Anchor type:
-• Named-person anchor (e.g., "of Forest Benner", "of Demetria Woodland"): EXACTLY ONE person exists with this name. Search by name directly. Do NOT try to find multiple matching entities.
-• Attribute-value anchor (e.g., "whose date of birth is 0945-06-12", "whose hobby is painting", "whose occupation is X"): MANY people may share this attribute. Use search_wiki_deep and try AT LEAST 5 different query phrasings (e.g., "date of birth 0945-06-12", "born 0945-06-12", "DOB 0945-06-12", "0945-06-12 person", "born June 12 year 0945") to find ALL matching entities. NEVER settle for a nearest-date approximation, NEVER strip date components to broaden the query.
+STEP 2 — EXHAUSTIVE HOP TRAVERSAL:
+For EACH hop in your plan, process EVERY entity — do NOT stop at the first one found.
 
-Answer type:
-• "How many X does Y have?" → COUNT: your answer must be NUMBER(s), never entity names.
-• "Who is/are the X of Y?" → ENTITY: return all matching entity NAMES.
-• "What is the X of Y?" → ATTRIBUTE: return all matching attribute VALUES.
+Repeat this loop for each hop level:
+  For EACH entity in current hop's entity list (read from your notes):
+    a. State: "Processing entity [N] of [total]: [name]. Hop [K] of [M]."
+    b. Search for that entity's [hop-K relation]
+    c. Use append_notes('hop_K_results', '[entity] → [results]')  ← ALWAYS use append_notes here, NOT take_notes
+  ⚠️ Complete ALL entities before advancing to the next hop.
 
-STEP 2 — TRAVERSE HOP BY HOP:
-Follow your hop_plan exactly — execute one hop at a time.
-• Save each hop's results in notes: 'hop_1_results', 'hop_2_results', 'hop_3_results', etc.
-• Before each search, check your notes to confirm WHICH HOP you are currently executing.
-• Exhaust all entities at the current hop before moving to the next.
+⚠️ CRITICAL: Do NOT apply the FINAL relation until ALL intermediate hops are complete for ALL entities.
+⚠️ CRITICAL: Applying the final relation one hop early (hop 2 instead of hop 3) is the most common mistake — re-read hop_plan before each search.
 
-⚠️ CRITICAL RULE: Do NOT apply the FINAL relation until you have FULLY completed ALL intermediate hops and recorded them in notes. If your plan says "A → B → C → ANSWER", then you must have 'hop_1_results' (B entities) and 'hop_2_results' (C entities) in notes BEFORE computing the answer. Applying the final relation one hop too early is the #1 mistake — verify your hop count against your hop_plan before finishing.
+STEP 3 — APPLY FINAL RELATION TO ALL:
+For EACH entity in your last intermediate hop note (process ALL of them, one by one):
+  a. State: "Applying final relation to entity [name]."
+  b. Search for the final relation.
+  c. append_notes('final_results', '[entity]: [result]')
 
-STEP 3 — APPLY FINAL RELATION TO ALL PREVIOUS-HOP ENTITIES:
-Apply the FINAL relation to EVERY entity from the previous hop (all entities in your last intermediate results note).
-• COUNT question: compute the count for EACH entity separately → return the SET of all distinct counts as strings. NEVER sum across entities. Example: 3 entities with counts 2, 3, 3 → answer is ['2', '3'].
-• ENTITY question: collect all matching names from EVERY entity → return the full union (no duplicates).
-• ATTRIBUTE question: collect all matching attribute values from EVERY entity → return the full union.
+Then compile the answer:
+• COUNT: collect distinct count values from EVERY processed entity → return as SET of strings (e.g., ['0','2','3']). NEVER return just one count if multiple entities exist. COUNT means per-individual count — never sum across entities.
+• ENTITY: collect all names from every entity → return full union (no duplicates).
+• ATTRIBUTE: collect all values from every entity → return full union.
 
-STEP 4 — VERIFY AND FINISH:
-Read your 'hop_plan' note. Verify:
-1. You executed all hops in the plan
-2. The final relation was applied at the LAST hop (not an earlier one)
-3. The answer type matches the question format
-Only call finish() after verifying."""
+STEP 4 — COMPLETENESS CHECK:
+Before calling finish(), read all notes and verify:
+1. Did you process EVERY entity at each hop? (Not just 1-2)
+2. For attribute-value anchor: did you make 5+ query phrasings? Find 5+ anchor entities?
+3. For COUNT: does your answer include values from ALL processed entities, not just one?
+4. Was the final relation applied at the LAST hop only?
+Only call finish() after confirming completeness."""
 
     question: str = dspy.InputField()
     answer: list[str] = dspy.OutputField(
@@ -73,7 +74,7 @@ class PhantomWikiReAct(dspy.Module):
 
         self.react = dspy.ReAct(
             signature=AnswerQuestion,
-            tools=[self.search_wiki, self.search_wiki_deep, self.take_notes, self.read_notes],
+            tools=[self.search_wiki, self.search_wiki_deep, self.take_notes, self.append_notes, self.read_notes],
             max_iters=50,
         )
 
@@ -113,6 +114,17 @@ class PhantomWikiReAct(dspy.Module):
         note: what you found or plan to investigate next"""
         self._notes[key] = note
         return f"Saved note '{key}'. You now have {len(self._notes)} note(s) total."
+
+    def append_notes(self, key: str, note: str) -> str:
+        """Append new findings to an existing note. Use this when accumulating results across multiple entities (e.g., building up hop_1_results for many anchors).
+        key: the note key to append to (e.g., 'hop_1_results', 'final_results')
+        note: the new information to add (will be added on a new line below any existing content)"""
+        existing = self._notes.get(key, "")
+        if existing:
+            self._notes[key] = existing + "\n" + note
+        else:
+            self._notes[key] = note
+        return f"Appended to note '{key}'."
 
     def read_notes(self, key: str = "all") -> str:
         """Read from your notes workspace.

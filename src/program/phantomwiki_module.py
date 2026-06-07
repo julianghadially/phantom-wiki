@@ -45,6 +45,7 @@ For EACH hop in your plan, process EVERY entity — do NOT stop at the first one
 • cousin of X: (1) find X's parents, (2) find siblings of each parent, (3) find children of those siblings
 • great-grandchild of X: (1) find X's children, (2) find their children (grandchildren), (3) find grandchildren's children
 • second uncle/second aunt of X: go 3 generations UP then sideways → (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's parent (great-grandparent), (4) find great-grandparent's siblings (male=second uncle, female=second aunt)
+  EXAMPLE — second uncle of Rosina: (1) Search Rosina → parent is Colby Robey. (2) Search Colby Robey → grandparent is Tiffany Robey. (3) Search Tiffany Robey → great-grandparent is Keri Keith. (4) Search Keri Keith → siblings who are MALE = Rosina's second uncles. ⚠️ STOP AT GREAT-GRANDPARENT'S SIBLINGS — do NOT go one level higher to great-GREAT-grandparents! Siblings of great-grandparent = second uncles/aunts. Siblings of great-GREAT-grandparent = WRONG (too deep).
 Each sub-hop requires its own search call on the intermediate entity by name.
 
 COUSIN DEFINITIONS:
@@ -58,7 +59,6 @@ COUSIN DEFINITIONS:
   (b) ALSO run search_wiki_multi(["son of [X full name]", "daughter of [X full name]", "child of [X full name]"]) — many children appear ONLY in their own articles (not in the parent's article)
   ⚠️ CRITICAL: Do NOT use "parent [name]" queries for finding children — "parent [name]" returns the ENTITY'S OWN article (listing their own parents), NOT their children's articles! The correct queries are "son of [name]", "daughter of [name]", "child of [name]".
   ⚠️ TERMINATION: Do NOT apply FINDING CHILDREN at the FINAL hop where you are collecting the answer. If per your hop_plan the entities found AT THIS LEVEL are your final answer (to be processed in STEP 3), go directly to STEP 3 — do NOT search for their children.
-  ⚠️ VERIFICATION: After running "son of [X]" / "daughter of [X]" queries, verify each returned entity's article EXPLICITLY states X is their parent. If the article does NOT mention X as a parent, discard that result — it is a retrieval false positive.
   ⚠️ THIS IS MANDATORY AT EVERY INTERMEDIATE DESCENT LEVEL. If you found 30 grandchildren and now need great-grandchildren, you MUST run search_wiki_multi(["son of [grandchild_name]", "daughter of [grandchild_name]", "child of [grandchild_name]"]) for each grandchild — not just read their articles.
   For large sets (>4 entities), use search_wiki_multi(["son of name1", "son of name2", "daughter of name1", "daughter of name2"]) to batch reverse-child lookups in one step.
   NEVER rely solely on forward article reading for downward traversal — forward-only search misses the majority of descendants.
@@ -66,6 +66,7 @@ COUSIN DEFINITIONS:
 ⚠️ RELATIONSHIP VERIFICATION: When a search returns an entity with the same surname as X, verify the article EXPLICITLY mentions X or states a relationship to X. A same-surname result is NOT a relative unless explicitly connected. If unsure, try "[X full name] parent" or "[X full name] sibling" as more specific queries.
 
 ⚠️ MISSING ENTITY PROTOCOL: If an intermediate entity (e.g., a parent or grandparent) cannot be found after 2 different query attempts, record '[entity_name]: UNKNOWN' in your notes and SKIP this branch. Do NOT substitute a same-surname entity as a stand-in — this causes hallucination errors.
+  ⚠️ NEVER GUESS OR HYPOTHESIZE: Do NOT assume or infer who a missing entity might be (e.g., "Pat Highsmith is probably Rodrigo's parent because they share a surname"). If an entity's relatives cannot be found after 2 attempts, mark the branch UNKNOWN. Speculated entities cause cascading false positives throughout the entire traversal.
 
 ⚠️ DEAD-END PIVOT: If you have made 3+ different searches for information about a single entity and found nothing useful, STOP immediately — do NOT keep trying. Take one of these actions:
   (a) Mark this entity as UNKNOWN and move on to the next entity in your list
@@ -92,6 +93,10 @@ For EACH entity in your last intermediate hop note (process ALL of them, one by 
   a. State: "Applying final relation to entity [name]."
   b. Search for the final relation.
   c. append_notes('final_results', '[entity]: [result]')
+⚠️ FINDING CHILDREN IN STEP 3: If the FINAL relation requires finding CHILDREN of intermediate entities (e.g., finding cousins = children of parent's siblings, finding nieces = female children of siblings, finding first-cousins-once-removed = children of first cousins), you MUST run BOTH:
+  (a) Forward lookup: read the intermediate entity's article for any listed children
+  (b) Reverse lookup: search_wiki_multi(["son of [entity_name]", "daughter of [entity_name]", "child of [entity_name]"]) — many children appear ONLY in their own articles (NOT on the parent's page)
+  This applies even though this is the FINAL hop — forward-only lookup misses the majority of children.
 
 ⚠️ GENDER FILTER: For gender-specific final relations, you MUST filter at this step:
   • uncle = male siblings ONLY (NOT female, NOT all siblings)
@@ -105,9 +110,12 @@ For EACH entity in your last intermediate hop note (process ALL of them, one by 
   • second uncle = male siblings of great-grandparents ONLY
   • second aunt = female siblings of great-grandparents ONLY
   Explicitly check each entity's gender from their wiki article before including them.
+  ⚠️ SIBLING-IN-LAW TRAP: When searching for SIBLINGS of X, do NOT include the SPOUSE of X's sibling. If Y is X's sibling and Z is Y's spouse, Z is X's sibling-in-law — NOT X's sibling. Only count entities whose wiki article explicitly lists the SAME parents as X.
 
 Then compile the answer:
 • COUNT: For COUNT questions, use append_notes('entity_counts', '[entity_name]: COUNT=N') for EACH entity as you process it. At the end, read all entity_counts notes and compile the SET of unique per-entity values → return as SET of strings (e.g., ['0','2','3']). NEVER return a global total — COUNT means per-individual count, never a sum. NEVER return just one count if multiple entities exist.
+  ⚠️ COUNT SET SEMANTICS: The answer is the SET of DISTINCT count values — NOT one value per anchor entity. Example: if 43 anchor entities have great-grandson counts [1,1,0,1,3,3,0,...], deduplicate to ['0','1','3']. Use set() logic. Return only unique values.
+  ⚠️ COUNT CONFLATION TRAP: NEVER count the size of your intermediate entity pool as the answer. If the question asks "How many cousins does X have?", you MUST search X's own wiki article and count their actual cousins listed there — do NOT count how many hop-candidates you collected in your notes. The intermediate pool is your traversal workspace, NOT the answer.
 • ENTITY: collect all names from every entity → return full union (no duplicates).
 • ATTRIBUTE: collect all values from every entity → return full union.
 

@@ -42,14 +42,27 @@ For EACH hop in your plan, process EVERY entity — do NOT stop at the first one
 • second uncle/second aunt of X: go 3 generations UP then sideways → (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's parent (great-grandparent), (4) find great-grandparent's siblings (male=second uncle, female=second aunt)
 Each sub-hop requires its own search call on the intermediate entity by name.
 
-⚠️ FINDING CHILDREN: When the hop requires finding children of entity X, do TWO searches:
-  (a) Search for X's article and read the listed children
-  (b) Also search "parent [X full name]" to find entities who list X as their parent but may not appear on X's page
-  Combine results from both searches to get the complete child set.
+COUSIN DEFINITIONS:
+• First cousin of X = child of X's parent's sibling. Equivalently: grandchildren of the same grandparent are first cousins. If A, B, C are all grandchildren of grandparent G, then A, B, C are each other's first cousins — do NOT navigate to G's siblings when the grandchildren have already been found.
+• First cousin once removed = child of a first cousin (one generation down from the first cousin).
+• Second cousin = child of a parent's first cousin.
+⚠️ When you have a set of siblings S1, S2, S3... the CHILDREN of each sibling are first cousins of each other — check for cousin relationships WITHIN your working entity set before searching externally.
+
+⚠️ FINDING CHILDREN — APPLIES AT EVERY DOWNWARD HOP: For ANY hop that traverses down a generation (finding children, grandchildren, great-grandchildren, etc.), you MUST use BOTH forward and reverse lookup at THAT hop level:
+  (a) Read X's article to see children listed there
+  (b) ALSO search "parent [X full name]" — many children appear ONLY in their own articles (not in the parent's article)
+  ⚠️ THIS IS MANDATORY AT EVERY DESCENT LEVEL, NOT JUST THE FIRST HOP. If you found 30 grandchildren and now need great-grandchildren, you MUST run "parent [grandchild_name]" for each grandchild — not just read their articles.
+  For large sets (>4 entities), use search_wiki_multi(["parent name1", "parent name2", "parent name3", "parent name4"]) to batch reverse-parent lookups in one step.
+  NEVER rely solely on forward article reading for downward traversal — forward-only search misses the majority of descendants.
 
 ⚠️ RELATIONSHIP VERIFICATION: When a search returns an entity with the same surname as X, verify the article EXPLICITLY mentions X or states a relationship to X. A same-surname result is NOT a relative unless explicitly connected. If unsure, try "[X full name] parent" or "[X full name] sibling" as more specific queries.
 
 ⚠️ MISSING ENTITY PROTOCOL: If an intermediate entity (e.g., a parent or grandparent) cannot be found after 2 different query attempts, record '[entity_name]: UNKNOWN' in your notes and SKIP this branch. Do NOT substitute a same-surname entity as a stand-in — this causes hallucination errors.
+
+⚠️ DEAD-END PIVOT: If you have made 3+ different searches for information about a single entity and found nothing useful, STOP immediately — do NOT keep trying. Take one of these actions:
+  (a) Mark this entity as UNKNOWN and move on to the next entity in your list
+  (b) If you suspect more anchor entities exist with the same attribute (e.g., more people with the same DOB or hobby), pivot to run additional anchor-search phrasings before continuing traversal
+  Spending 5+ searches on the same dead-end entity wastes your entire iteration budget.
 
 ⚠️ TERMINATION RULE (per-hop): After completing hop K, ask: "Is this the LAST intermediate hop before applying the FINAL relation at STEP 3?"
   - If YES → proceed to STEP 3 immediately

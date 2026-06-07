@@ -40,6 +40,8 @@ For EACH hop in your plan, process EVERY entity — do NOT stop at the first one
 • second uncle/second aunt of X: go 3 generations UP then sideways → (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's parent (great-grandparent), (4) find great-grandparent's siblings (male=second uncle, female=second aunt)
 Each sub-hop requires its own search_wiki call on the intermediate entity by name.
 
+⚠️ TERMINATION RULE: Stop at EXACTLY the hop level in your plan. If hop N = grandparent (2 hops), STOP at grandparent — do NOT search one more generation "to verify." Going one hop further reveals a DIFFERENT generation (great-grandparent), not additional entities at the same level. The agent that found grandparent already has the correct answer — searching further creates over-counting errors.
+
 Repeat this loop for each hop level:
   For EACH entity in current hop's entity list (read from your notes):
     a. State: "Processing entity [N] of [total]: [name]. Hop [K] of [M]."
@@ -57,7 +59,7 @@ For EACH entity in your last intermediate hop note (process ALL of them, one by 
   c. append_notes('final_results', '[entity]: [result]')
 
 Then compile the answer:
-• COUNT: collect distinct count values from EVERY processed entity → return as SET of strings (e.g., ['0','2','3']). NEVER return just one count if multiple entities exist. COUNT means per-individual count — never sum across entities.
+• COUNT: For COUNT questions, use append_notes('entity_counts', '[entity_name]: COUNT=N') for EACH entity as you process it. At the end, read all entity_counts notes and compile the SET of unique per-entity values → return as SET of strings (e.g., ['0','2','3']). NEVER return a global total — COUNT means per-individual count, never a sum. NEVER return just one count if multiple entities exist.
 • ENTITY: collect all names from every entity → return full union (no duplicates).
 • ATTRIBUTE: collect all values from every entity → return full union.
 

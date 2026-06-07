@@ -29,7 +29,8 @@ STEP 1 — CLASSIFY ANCHOR:
 
 Answer type: "How many..." → COUNT (return numbers only). "Who..." → ENTITY (return names). "What is..." → ATTRIBUTE (return values).
 
-⚠️ DEGENERATE CASE — SAME ANCHOR AND TARGET ATTRIBUTE: If the FINAL attribute asked for IS THE SAME as the ANCHOR attribute (e.g., "What is the hobby of the person whose hobby is tea bag collecting?", "What is the DOB of the person whose DOB is 0945-06-12?"), the answer IS the anchor value itself — do NOT search for entities or traverse any hops. Immediately call finish() with just the anchor value.
+⚠️ DEGENERATE CASE — SAME ANCHOR AND TARGET ATTRIBUTE: If the FINAL attribute asked for IS THE SAME TYPE as the ANCHOR attribute (e.g., "What is the hobby of the person whose hobby is tea bag collecting?" — hobby=hobby; "What is the DOB of the person whose DOB is 0945-06-12?" — DOB=DOB), the answer IS the anchor value itself — do NOT search for entities or traverse any hops. Immediately call finish() with just the anchor value.
+⚠️ NOT DEGENERATE — do NOT misapply this shortcut: "What is the OCCUPATION of the person whose DOB is 0918-01-17?" → DOB ≠ occupation — this is NOT degenerate. You MUST search for the person by DOB and return their occupation. "What is the HOBBY of the person whose OCCUPATION is X?" → occupation ≠ hobby — must search. The degenerate shortcut applies ONLY when the attribute TYPE being asked for (hobby, DOB, occupation, etc.) is EXACTLY IDENTICAL to the attribute type used as the anchor filter.
 
 STEP 2 — EXHAUSTIVE HOP TRAVERSAL:
 For EACH hop in your plan, process EVERY entity — do NOT stop at the first one found.
@@ -117,13 +118,23 @@ Then compile the answer:
 • COUNT: For COUNT questions, use append_notes('entity_counts', '[entity_name]: COUNT=N') for EACH entity as you process it. At the end, read all entity_counts notes and compile the SET of unique per-entity values → return as SET of strings (e.g., ['0','2','3']). NEVER return a global total — COUNT means per-individual count, never a sum. NEVER return just one count if multiple entities exist.
   ⚠️ COUNT SET SEMANTICS: The answer is the SET of DISTINCT count values — NOT one value per anchor entity. Example: if 43 anchor entities have great-grandson counts [1,1,0,1,3,3,0,...], deduplicate to ['0','1','3']. Use set() logic. Return only unique values.
   ⚠️ COUNT POOL-SIZE TRAP: Do NOT return N = the raw size of your traversal workspace as the COUNT answer. Wrong: "I found 19 candidate entities in my notes → answer is 19." The correct COUNT equals the number of correctly traversed final-hop entities found FOR THE FOCAL ENTITY. EXCEPTION: for cross-anchor COUNT questions ("how many great-grandsons does each farmer have?"), the COUNT for each anchor = the size of final-hop entities found FOR THAT ANCHOR ONLY. Extended kin (cousins, second cousins, nieces, etc.) are ALWAYS found via traversal — they are NEVER listed in wiki articles. Traversal IS the answer method.
+  ⚠️ PER-ANCHOR ISOLATION (critical for multi-entity anchors): When processing MULTIPLE anchor entities (e.g., all 36 people whose occupation is "company secretary"), you MUST process each anchor entity's family tree COMPLETELY INDEPENDENTLY. Do NOT merge relatives from different anchors into a shared pool.
+  WRONG: Find all grandfathers of ALL 36 anchors merged → pool all their relatives → count total FCORs = 18 → return '18'. (This is meaningless cross-family aggregation!)
+  RIGHT: Anchor 1 (Devin): find Devin's grandfather → count Devin's grandfather's FCORs = K1 → record 'Devin: COUNT=K1'. Anchor 2 (Lucretia): find Lucretia's grandfather independently → count = K2 → record 'Lucretia: COUNT=K2'. Return DISTINCT SET {K1, K2, ...}.
+  Processing anchors in a merged pool produces an aggregate cross-family count that is always wrong.
 • ENTITY: collect all names from every entity → return full union (no duplicates).
 • ATTRIBUTE: collect all values from every entity → return full union.
 
 ⚠️ SINGULAR PHRASING RULE: Questions using "Who is the X?" or "What is the X?" may have MULTIPLE valid answers. NEVER reduce your answer to 1 entity because the question uses "the" or singular phrasing. If your notes contain 5 female cousins, your answer MUST contain all 5. Grammatical number in the question does NOT determine cardinality.
 
 STEP 4 — COMPLETENESS CHECK:
-Before calling finish(), read all notes and verify:
+Before calling finish(), verify each item below:
+0. ⚠️ MANDATORY ANCHOR COVERAGE (for COUNT questions with attribute-value anchors): Read your 'anchor_entities' note — count N = total anchor entities found. Read your 'entity_counts' note — count M = entities that have recorded COUNT values. If M < N:
+   (a) List the unprocessed anchors by name (compare 'anchor_entities' list to the names appearing in 'entity_counts')
+   (b) Process remaining anchors in batches: batch_lookup([name1, name2, name3, name4]) up to 4 at once
+   (c) For each unprocessed anchor: trace the hop chain to find their COUNT, then append_notes('entity_counts', 'name: COUNT=K')
+   (d) Only call finish() after M = N OR after your iteration budget is nearly exhausted (then compile from whatever you have)
+   ⚠️ Finding 22 anchors but processing only 8 is a critical incompleteness — process the remaining 14 before finishing!
 1. Did you process EVERY entity at each hop? (Not just 1-2)
 2. For attribute-value anchor: did you use search_wiki_multi with 5+ distinct phrasings? Find 5+ anchor entities?
 3. For COUNT: re-read your entity_counts note. Does your answer include the FULL SET of distinct values from ALL processed entities? If you computed values for 10 entities, your answer must contain every distinct count value — even if the question uses singular phrasing.

@@ -139,23 +139,23 @@ The pipeline is designed for the PhantomWiki dataset, which contains factoid que
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: 4-Step Anchor-Exhaustion ReAct with Notes Tools (k=10)
+## ARCHITECTURE TITLE: 5-Step Hop-Chain Planning ReAct with search_wiki_deep (k=10/k=30)
 
 ## ARCHITECTURE SUMMARY:
-The system is a DSPy-based Retrieval-Augmented Generation pipeline for answering multi-hop factoid questions from the PhantomWiki dataset. `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) wraps `PhantomWikiReAct` (`src/program/phantomwiki_module.py`), which implements a structured 4-step anchor-exhaustion reasoning protocol via a `dspy.ReAct` loop with three tools: `search_wiki`, `take_notes`, and `read_notes`.
+The system is a DSPy-based Retrieval-Augmented Generation pipeline for answering multi-hop factoid questions from the PhantomWiki dataset. `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) wraps `PhantomWikiReAct` (`src/program/phantomwiki_module.py`), which implements a structured 5-step hop-chain planning and traversal protocol via a `dspy.ReAct` loop with four tools: `search_wiki`, `search_wiki_deep`, `take_notes`, and `read_notes`.
 
-The `AnswerQuestion` signature instructs the agent to (1) classify the question type (COUNT/ENTITY/ATTRIBUTE), (2) exhaust all anchor entities matching the question's condition, (3) process each anchor independently, and (4) verify completeness via notes before finishing. Thread-local storage ensures safe concurrent evaluation.
+The `AnswerQuestion` signature instructs the agent to (Step 0) write an explicit hop-chain plan before searching, (Step 1) classify anchor type (named-person vs attribute-value) and answer type, (Step 2) traverse hops one at a time saving intermediate results in notes, (Step 3) apply the final relation to all previous-hop entities, and (Step 4) verify against the hop plan before finishing. Thread-local storage ensures safe concurrent evaluation.
 
 ## ARCHITECTURE DESCRIPTION:
 **Entry point:** `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) is a `dspy.Module` that configures a ColBERTv2 retrieval model and GPT-4.1-mini LM, then delegates `forward(question)` to `PhantomWikiReAct` within a `dspy.context`.
 
-**Module layer:** `PhantomWikiReAct` (`src/program/phantomwiki_module.py`) owns a `dspy.Retrieve(k=10)` retriever and a `dspy.ReAct` loop (max 50 iterations) bound to the `AnswerQuestion` signature and three tools. Notes state is stored in `threading.local()` for thread-safety during parallel evaluation. Each call to `forward` resets the notes workspace.
+**Module layer:** `PhantomWikiReAct` (`src/program/phantomwiki_module.py`) owns a `dspy.Retrieve(k=10)` retriever and a `dspy.ReAct` loop (max 50 iterations) bound to the `AnswerQuestion` signature and four tools. Notes state is stored in `threading.local()` for thread-safety during parallel evaluation. Each call to `forward` resets the notes workspace.
 
-**Signature:** `AnswerQuestion` contains a 4-step structured prompt: classify question type → exhaust all anchor entities via repeated searches → process each anchor independently (COUNT returns distinct numeric counts, ENTITY/ATTRIBUTE returns union of results) → verify via notes before calling finish. Output is `list[str]` covering all correct answers.
+**Signature:** `AnswerQuestion` contains a 5-step structured prompt. Step 0 requires writing an explicit hop-chain plan (saved as 'hop_plan') before any searching. Step 1 distinguishes named-person anchors (single entity) from attribute-value anchors (many entities, use search_wiki_deep). Step 2 traverses hop by hop, saving 'hop_N_results' notes for each intermediate hop, with a critical rule against applying the final relation too early. Step 3 applies the final relation to all entities from the last intermediate hop. Step 4 verifies hop count and answer type against the plan before calling finish. Output is `list[str]` covering all correct answers.
 
-**Tools:** `search_wiki(query)` retrieves k=10 passages via ColBERTv2 and returns them joined. `take_notes(key, note)` saves findings to a thread-local dict. `read_notes(key)` reads one or all notes, enabling the agent to review its accumulated findings before finalizing the answer.
+**Tools:** `search_wiki(query)` retrieves k=10 passages via ColBERTv2. `search_wiki_deep(query)` retrieves k=30 passages for exhaustive attribute-value anchor discovery. `take_notes(key, note)` saves findings to a thread-local dict. `read_notes(key)` reads one or all notes.
 
-**Data flow:** question → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` (reset notes) → `dspy.ReAct` loop (classify → search anchors → take_notes → process each anchor → read_notes → finish) → `dspy.Prediction(answer=list[str])`.
+**Data flow:** question → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` (reset notes) → `dspy.ReAct` loop (write hop_plan → classify anchor/answer type → hop-by-hop traversal with notes → apply final relation → verify → finish) → `dspy.Prediction(answer=list[str])`.
 
 **Metric:** `phantomwiki_f1_feedback` uses `dspy.evaluate.answer_exact_match` for binary scoring of `pred.answer` vs `example.answer`.
 ```

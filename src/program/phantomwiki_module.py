@@ -9,26 +9,49 @@ import threading
 class AnswerQuestion(dspy.Signature):
     """You are a research agent answering questions about fictional characters in a wiki.
 
-STEP 1 — CLASSIFY THE QUESTION:
-- "How many X does Y have?" → COUNT question: your answer must be NUMBER(s), never entity names.
-- "Who is/are the X of Y?" → ENTITY question: return all matching entity NAMES.
-- "What is the X of Y?" → ATTRIBUTE question: return all matching attribute VALUES.
+STEP 0 — PLAN THE HOP CHAIN:
+Before any searching, parse the question into an explicit hop chain.
+Count the relational hops by counting "of the" phrases and possessives.
+Write: [ANCHOR] → [hop-1-relation] → [hop-2-relation] → ... → [ANSWER TYPE]
 
-STEP 2 — EXHAUST THE ANCHOR:
-The anchor is the entity/condition used to find the subject (e.g., "the person whose date of birth is X", "the grandchild of John").
-Multiple people may share the same date of birth, occupation, or relation. You MUST find ALL of them.
-- Try different search phrasings to find every entity matching the anchor.
-- Record ALL anchor entities in your notes before proceeding.
-- Do NOT stop at the first match.
+Examples:
+• "sister-in-law of the friend of the friend of X" → X →[friend]→[friend]→[sister-in-law]→ ENTITY (3 hops: apply sister-in-law at hop 3, NOT hop 1)
+• "great-grandchild of the great-grandfather of Y" → Y →[great-grandfather UP 3 gen]→[great-grandchild DOWN 3 gen]→ ENTITY
+• "How many cousins does the daughter of Z have?" → Z →[daughter]→[cousins]→ COUNT (2 hops)
+• "What is the occupation of the person whose DOB is X?" → DOB=X →[find all people]→[occupation]→ ATTRIBUTE
 
-STEP 3 — PROCESS EACH ANCHOR ENTITY SEPARATELY:
-For EACH anchor entity found in Step 2, traverse the required relation(s) independently.
-- COUNT question: count the target for each anchor entity individually. Return the SET of distinct counts. Example: two anchors with counts 3 and 7 → answer is ['3', '7']. NEVER sum across anchors.
-- ENTITY/ATTRIBUTE question: collect all results from every anchor entity. Return the union.
+Save this plan in your notes as 'hop_plan'. Do NOT start searching until you have written the hop plan.
+
+STEP 1 — CLASSIFY ANCHOR AND ANSWER TYPE:
+Anchor type:
+• Named-person anchor (e.g., "of Forest Benner", "of Demetria Woodland"): EXACTLY ONE person exists with this name. Search by name directly. Do NOT try to find multiple matching entities.
+• Attribute-value anchor (e.g., "whose date of birth is 0945-06-12", "whose hobby is painting", "whose occupation is X"): MANY people may share this attribute. Use search_wiki_deep and try AT LEAST 5 different query phrasings (e.g., "date of birth 0945-06-12", "born 0945-06-12", "DOB 0945-06-12", "0945-06-12 person", "born June 12 year 0945") to find ALL matching entities. NEVER settle for a nearest-date approximation, NEVER strip date components to broaden the query.
+
+Answer type:
+• "How many X does Y have?" → COUNT: your answer must be NUMBER(s), never entity names.
+• "Who is/are the X of Y?" → ENTITY: return all matching entity NAMES.
+• "What is the X of Y?" → ATTRIBUTE: return all matching attribute VALUES.
+
+STEP 2 — TRAVERSE HOP BY HOP:
+Follow your hop_plan exactly — execute one hop at a time.
+• Save each hop's results in notes: 'hop_1_results', 'hop_2_results', 'hop_3_results', etc.
+• Before each search, check your notes to confirm WHICH HOP you are currently executing.
+• Exhaust all entities at the current hop before moving to the next.
+
+⚠️ CRITICAL RULE: Do NOT apply the FINAL relation until you have FULLY completed ALL intermediate hops and recorded them in notes. If your plan says "A → B → C → ANSWER", then you must have 'hop_1_results' (B entities) and 'hop_2_results' (C entities) in notes BEFORE computing the answer. Applying the final relation one hop too early is the #1 mistake — verify your hop count against your hop_plan before finishing.
+
+STEP 3 — APPLY FINAL RELATION TO ALL PREVIOUS-HOP ENTITIES:
+Apply the FINAL relation to EVERY entity from the previous hop (all entities in your last intermediate results note).
+• COUNT question: compute the count for EACH entity separately → return the SET of all distinct counts as strings. NEVER sum across entities. Example: 3 entities with counts 2, 3, 3 → answer is ['2', '3'].
+• ENTITY question: collect all matching names from EVERY entity → return the full union (no duplicates).
+• ATTRIBUTE question: collect all matching attribute values from EVERY entity → return the full union.
 
 STEP 4 — VERIFY AND FINISH:
-Use read_notes to review all found anchor entities and results.
-Only call finish() once you have processed ALL anchor entities and exhausted ALL relation paths."""
+Read your 'hop_plan' note. Verify:
+1. You executed all hops in the plan
+2. The final relation was applied at the LAST hop (not an earlier one)
+3. The answer type matches the question format
+Only call finish() after verifying."""
 
     question: str = dspy.InputField()
     answer: list[str] = dspy.OutputField(
@@ -50,7 +73,7 @@ class PhantomWikiReAct(dspy.Module):
 
         self.react = dspy.ReAct(
             signature=AnswerQuestion,
-            tools=[self.search_wiki, self.take_notes, self.read_notes],
+            tools=[self.search_wiki, self.search_wiki_deep, self.take_notes, self.read_notes],
             max_iters=50,
         )
 
@@ -76,6 +99,12 @@ class PhantomWikiReAct(dspy.Module):
         """Search the PhantomWiki corpus. Returns relevant passages about the queried topic.
         Tips: Search by person name for full articles, or by attribute for entity discovery."""
         results = self.retrieve(query)
+        return "\n\n".join(results.passages)
+
+    def search_wiki_deep(self, query: str) -> str:
+        """Deep search using 30 results instead of 10. Use this ONLY for attribute-value anchor enumeration (e.g., finding ALL people whose date of birth is X, whose hobby is Y, whose occupation is Z). Returns more results to maximize entity discovery for multi-entity attribute anchors."""
+        retrieve_deep = dspy.Retrieve(k=30)
+        results = retrieve_deep(query)
         return "\n\n".join(results.passages)
 
     def take_notes(self, key: str, note: str) -> str:

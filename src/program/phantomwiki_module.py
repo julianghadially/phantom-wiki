@@ -29,14 +29,19 @@ STEP 1 — CLASSIFY ANCHOR:
 
 Answer type: "How many..." → COUNT (return numbers only). "Who..." → ENTITY (return names). "What is..." → ATTRIBUTE (return values).
 
+⚠️ DEGENERATE CASE — SAME ANCHOR AND TARGET ATTRIBUTE: If the FINAL attribute asked for IS THE SAME as the ANCHOR attribute (e.g., "What is the hobby of the person whose hobby is tea bag collecting?", "What is the DOB of the person whose DOB is 0945-06-12?"), the answer IS the anchor value itself — do NOT search for entities or traverse any hops. Immediately call finish() with just the anchor value.
+
 STEP 2 — EXHAUSTIVE HOP TRAVERSAL:
 For EACH hop in your plan, process EVERY entity — do NOT stop at the first one found.
 
 ⚠️ EFFICIENCY: For traversal loops with MORE THAN 3 entities, use batch_lookup(['name1', 'name2', 'name3', 'name4']) to retrieve multiple entity articles in ONE step (up to 8 at a time). This conserves your iteration budget for deeper hops.
 
 ⚠️ TRAVERSAL METHOD — Multi-hop kinship terms CANNOT be retrieved with a single query. The wiki stores individual relations (parent, child, sibling, spouse). You MUST traverse step by step:
-• uncle/aunt of X: (1) search X → find X's parents, (2) find siblings of each parent (male=uncle, female=aunt)
+• uncle/aunt of X: (1) search X → find X's PARENTS, (2) find SIBLINGS of each parent (male=uncle, female=aunt)
+  ⚠️ uncle/aunt = sibling of X's PARENT — NOT sibling of X. Always go UP to the parent first.
 • great-uncle/great-aunt of X: (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's siblings
+• nephew/niece of X: (1) search X → find X's OWN SIBLINGS (NOT X's parents), (2) find CHILDREN of each sibling (male child=nephew, female child=niece)
+  ⚠️ nephew/niece = child of X's SIBLING — NOT child of X's parents' siblings (those would be X's cousins!).
 • cousin of X: (1) find X's parents, (2) find siblings of each parent, (3) find children of those siblings
 • great-grandchild of X: (1) find X's children, (2) find their children (grandchildren), (3) find grandchildren's children
 • second uncle/second aunt of X: go 3 generations UP then sideways → (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's parent (great-grandparent), (4) find great-grandparent's siblings (male=second uncle, female=second aunt)
@@ -50,9 +55,10 @@ COUSIN DEFINITIONS:
 
 ⚠️ FINDING CHILDREN — APPLIES AT EVERY DOWNWARD HOP: For ANY hop that traverses down a generation (finding children, grandchildren, great-grandchildren, etc.), you MUST use BOTH forward and reverse lookup at THAT hop level:
   (a) Read X's article to see children listed there
-  (b) ALSO search "parent [X full name]" — many children appear ONLY in their own articles (not in the parent's article)
-  ⚠️ THIS IS MANDATORY AT EVERY DESCENT LEVEL, NOT JUST THE FIRST HOP. If you found 30 grandchildren and now need great-grandchildren, you MUST run "parent [grandchild_name]" for each grandchild — not just read their articles.
-  For large sets (>4 entities), use search_wiki_multi(["parent name1", "parent name2", "parent name3", "parent name4"]) to batch reverse-parent lookups in one step.
+  (b) ALSO run search_wiki_multi(["son of [X full name]", "daughter of [X full name]", "child of [X full name]"]) — many children appear ONLY in their own articles (not in the parent's article)
+  ⚠️ CRITICAL: Do NOT use "parent [name]" queries for finding children — "parent [name]" returns the ENTITY'S OWN article (listing their own parents), NOT their children's articles! The correct queries are "son of [name]", "daughter of [name]", "child of [name]".
+  ⚠️ THIS IS MANDATORY AT EVERY DESCENT LEVEL, NOT JUST THE FIRST HOP. If you found 30 grandchildren and now need great-grandchildren, you MUST run search_wiki_multi(["son of [grandchild_name]", "daughter of [grandchild_name]", "child of [grandchild_name]"]) for each grandchild — not just read their articles.
+  For large sets (>4 entities), use search_wiki_multi(["son of name1", "son of name2", "daughter of name1", "daughter of name2"]) to batch reverse-child lookups in one step.
   NEVER rely solely on forward article reading for downward traversal — forward-only search misses the majority of descendants.
 
 ⚠️ RELATIONSHIP VERIFICATION: When a search returns an entity with the same surname as X, verify the article EXPLICITLY mentions X or states a relationship to X. A same-surname result is NOT a relative unless explicitly connected. If unsure, try "[X full name] parent" or "[X full name] sibling" as more specific queries.
@@ -109,11 +115,12 @@ STEP 4 — COMPLETENESS CHECK:
 Before calling finish(), read all notes and verify:
 1. Did you process EVERY entity at each hop? (Not just 1-2)
 2. For attribute-value anchor: did you use search_wiki_multi with 5+ distinct phrasings? Find 5+ anchor entities?
-3. For COUNT: does your answer include values from ALL processed entities, not just one?
+3. For COUNT: re-read your entity_counts note. Does your answer include the FULL SET of distinct values from ALL processed entities? If you computed values for 10 entities, your answer must contain every distinct count value — even if the question uses singular phrasing.
 4. Was the final relation applied at the LAST hop only?
 5. Did each kinship hop use the step-by-step TRAVERSAL METHOD, not a single combined query?
 6. Did you apply the gender filter for gender-specific relations (uncle=male only, aunt=female only, etc.)?
-7. For children hops: did you search BOTH the parent's page AND "parent [name]" to find all children?
+7. For children hops: did you run search_wiki_multi(["son of [name]", "daughter of [name]", "child of [name]"]) to find all children? (NOT "parent [name]" — that returns the entity's own page, not their children!)
+8. Is the answer list deduplicated? Remove any repeated values — each distinct value must appear exactly once in the final answer.
 Only call finish() after confirming completeness."""
 
     question: str = dspy.InputField()

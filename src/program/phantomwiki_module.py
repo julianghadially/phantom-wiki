@@ -32,20 +32,34 @@ Answer type: "How many..." → COUNT (return numbers only). "Who..." → ENTITY 
 STEP 2 — EXHAUSTIVE HOP TRAVERSAL:
 For EACH hop in your plan, process EVERY entity — do NOT stop at the first one found.
 
+⚠️ EFFICIENCY: For traversal loops with MORE THAN 3 entities, use batch_lookup(['name1', 'name2', 'name3', 'name4']) to retrieve multiple entity articles in ONE step (up to 8 at a time). This conserves your iteration budget for deeper hops.
+
 ⚠️ TRAVERSAL METHOD — Multi-hop kinship terms CANNOT be retrieved with a single query. The wiki stores individual relations (parent, child, sibling, spouse). You MUST traverse step by step:
 • uncle/aunt of X: (1) search X → find X's parents, (2) find siblings of each parent (male=uncle, female=aunt)
 • great-uncle/great-aunt of X: (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's siblings
 • cousin of X: (1) find X's parents, (2) find siblings of each parent, (3) find children of those siblings
 • great-grandchild of X: (1) find X's children, (2) find their children (grandchildren), (3) find grandchildren's children
 • second uncle/second aunt of X: go 3 generations UP then sideways → (1) find X's parent, (2) find parent's parent (grandparent), (3) find grandparent's parent (great-grandparent), (4) find great-grandparent's siblings (male=second uncle, female=second aunt)
-Each sub-hop requires its own search_wiki call on the intermediate entity by name.
+Each sub-hop requires its own search call on the intermediate entity by name.
 
-⚠️ TERMINATION RULE: Stop at EXACTLY the hop level in your plan. If hop N = grandparent (2 hops), STOP at grandparent — do NOT search one more generation "to verify." Going one hop further reveals a DIFFERENT generation (great-grandparent), not additional entities at the same level. The agent that found grandparent already has the correct answer — searching further creates over-counting errors.
+⚠️ FINDING CHILDREN: When the hop requires finding children of entity X, do TWO searches:
+  (a) Search for X's article and read the listed children
+  (b) Also search "parent [X full name]" to find entities who list X as their parent but may not appear on X's page
+  Combine results from both searches to get the complete child set.
+
+⚠️ RELATIONSHIP VERIFICATION: When a search returns an entity with the same surname as X, verify the article EXPLICITLY mentions X or states a relationship to X. A same-surname result is NOT a relative unless explicitly connected. If unsure, try "[X full name] parent" or "[X full name] sibling" as more specific queries.
+
+⚠️ MISSING ENTITY PROTOCOL: If an intermediate entity (e.g., a parent or grandparent) cannot be found after 2 different query attempts, record '[entity_name]: UNKNOWN' in your notes and SKIP this branch. Do NOT substitute a same-surname entity as a stand-in — this causes hallucination errors.
+
+⚠️ TERMINATION RULE (per-hop): After completing hop K, ask: "Is this the LAST intermediate hop before applying the FINAL relation at STEP 3?"
+  - If YES → proceed to STEP 3 immediately
+  - If NO → continue to hop K+1
+  Do NOT search one extra generation to "verify" — going further reveals a DIFFERENT generation and creates over-counting errors.
 
 Repeat this loop for each hop level:
   For EACH entity in current hop's entity list (read from your notes):
     a. State: "Processing entity [N] of [total]: [name]. Hop [K] of [M]."
-    b. Search for that entity's [hop-K relation] using the TRAVERSAL METHOD above (not a single combined query)
+    b. Search for that entity's [hop-K relation] using the TRAVERSAL METHOD above (not a single combined query); use batch_lookup for groups of 4+ entities
     c. Use append_notes('hop_K_results', '[entity] → [results]')  ← ALWAYS use append_notes here, NOT take_notes
   ⚠️ Complete ALL entities before advancing to the next hop.
 
@@ -57,6 +71,19 @@ For EACH entity in your last intermediate hop note (process ALL of them, one by 
   a. State: "Applying final relation to entity [name]."
   b. Search for the final relation.
   c. append_notes('final_results', '[entity]: [result]')
+
+⚠️ GENDER FILTER: For gender-specific final relations, you MUST filter at this step:
+  • uncle = male siblings ONLY (NOT female, NOT all siblings)
+  • aunt = female siblings ONLY
+  • brother = male siblings ONLY
+  • sister = female siblings ONLY
+  • nephew = male children of siblings ONLY
+  • niece = female children of siblings ONLY
+  • grandson = male grandchildren ONLY
+  • granddaughter = female grandchildren ONLY
+  • second uncle = male siblings of great-grandparents ONLY
+  • second aunt = female siblings of great-grandparents ONLY
+  Explicitly check each entity's gender from their wiki article before including them.
 
 Then compile the answer:
 • COUNT: For COUNT questions, use append_notes('entity_counts', '[entity_name]: COUNT=N') for EACH entity as you process it. At the end, read all entity_counts notes and compile the SET of unique per-entity values → return as SET of strings (e.g., ['0','2','3']). NEVER return a global total — COUNT means per-individual count, never a sum. NEVER return just one count if multiple entities exist.
@@ -72,6 +99,8 @@ Before calling finish(), read all notes and verify:
 3. For COUNT: does your answer include values from ALL processed entities, not just one?
 4. Was the final relation applied at the LAST hop only?
 5. Did each kinship hop use the step-by-step TRAVERSAL METHOD, not a single combined query?
+6. Did you apply the gender filter for gender-specific relations (uncle=male only, aunt=female only, etc.)?
+7. For children hops: did you search BOTH the parent's page AND "parent [name]" to find all children?
 Only call finish() after confirming completeness."""
 
     question: str = dspy.InputField()
@@ -94,7 +123,7 @@ class PhantomWikiReAct(dspy.Module):
 
         self.react = dspy.ReAct(
             signature=AnswerQuestion,
-            tools=[self.search_wiki, self.search_wiki_deep, self.search_wiki_multi, self.take_notes, self.append_notes, self.read_notes],
+            tools=[self.search_wiki, self.search_wiki_deep, self.search_wiki_multi, self.batch_lookup, self.take_notes, self.append_notes, self.read_notes],
             max_iters=75,
         )
 
@@ -146,6 +175,24 @@ class PhantomWikiReAct(dspy.Module):
                     if title not in seen_titles:
                         seen_titles.add(title)
                         all_passages.append(passage)
+            except Exception:
+                continue
+        return "\n\n".join(all_passages) if all_passages else "No results found."
+
+    def batch_lookup(self, entity_names: list) -> str:
+        """Retrieve wiki articles for multiple named entities in a single call.
+        Use this during traversal loops to look up many entities efficiently (saves iteration budget).
+        Accepts a Python list of up to 8 entity name strings.
+        Example: batch_lookup(['Alice Smith', 'Bob Jones', 'Carol White'])
+        Returns each entity's wiki article separated by a header line."""
+        all_passages = []
+        for name in entity_names[:8]:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                results = self.retrieve(name.strip())
+                if results.passages:
+                    all_passages.append(f"=== {name.strip()} ===\n{results.passages[0]}")
             except Exception:
                 continue
         return "\n\n".join(all_passages) if all_passages else "No results found."

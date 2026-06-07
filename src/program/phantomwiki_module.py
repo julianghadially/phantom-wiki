@@ -46,6 +46,8 @@ Then compile the answer:
 • ENTITY: collect all names from every entity → return full union (no duplicates).
 • ATTRIBUTE: collect all values from every entity → return full union.
 
+⚠️ SINGULAR PHRASING RULE: Questions using "Who is the X?" or "What is the X?" may have MULTIPLE valid answers. NEVER reduce your answer to 1 entity because the question uses "the" or singular phrasing. If your notes contain 5 female cousins, your answer MUST contain all 5. Grammatical number in the question does NOT determine cardinality.
+
 STEP 4 — COMPLETENESS CHECK:
 Before calling finish(), read all notes and verify:
 1. Did you process EVERY entity at each hop? (Not just 1-2)

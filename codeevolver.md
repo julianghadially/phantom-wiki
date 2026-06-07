@@ -139,23 +139,23 @@ The pipeline is designed for the PhantomWiki dataset, which contains factoid que
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: PhantomWiki ReAct Pipeline with DSPy Retrieval-Augmented QA
+## ARCHITECTURE TITLE: 4-Step Anchor-Exhaustion ReAct with Notes Tools (k=10)
 
 ## ARCHITECTURE SUMMARY:
-The system is a DSPy-based Retrieval-Augmented Generation (RAG) pipeline designed to answer factoid questions from the PhantomWiki dataset. It follows a thin pipeline-wrapper pattern: `PhantomWikiReActPipeline` (in `src/program/phantomwiki_pipeline/PhantomWikiReActPipeline.py`) delegates entirely to `PhantomWikiReActAgent` (in `src/program/react_agent/PhantomWikiReActAgent.py`), which runs a DSPy `ReAct` loop equipped with a retrieval tool.
+The system is a DSPy-based Retrieval-Augmented Generation pipeline for answering multi-hop factoid questions from the PhantomWiki dataset. `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) wraps `PhantomWikiReAct` (`src/program/phantomwiki_module.py`), which implements a structured 4-step anchor-exhaustion reasoning protocol via a `dspy.ReAct` loop with three tools: `search_wiki`, `take_notes`, and `read_notes`.
 
-The retrieval tool (`src/program/tools/retrieve.py`) calls `PhantomWikiRetriever` (`src/retriever/retriever.py`), a DSPy module that fetches the top-3 passages from a configured knowledge base and joins them into a single string. The metric (`src/metric/metric.py`) evaluates predictions using exact match scoring.
+The `AnswerQuestion` signature instructs the agent to (1) classify the question type (COUNT/ENTITY/ATTRIBUTE), (2) exhaust all anchor entities matching the question's condition, (3) process each anchor independently, and (4) verify completeness via notes before finishing. Thread-local storage ensures safe concurrent evaluation.
 
 ## ARCHITECTURE DESCRIPTION:
-**Entry point:** `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline/PhantomWikiReActPipeline.py`) is a minimal `dspy.Module` whose `forward(question)` method instantiates and calls `PhantomWikiReActAgent`.
+**Entry point:** `PhantomWikiReActPipeline` (`src/program/phantomwiki_pipeline.py`) is a `dspy.Module` that configures a ColBERTv2 retrieval model and GPT-4.1-mini LM, then delegates `forward(question)` to `PhantomWikiReAct` within a `dspy.context`.
 
-**Agent layer:** `PhantomWikiReActAgent` (`src/program/react_agent/PhantomWikiReActAgent.py`) wraps `dspy.ReAct` with the `AnswerQuestion` signature (input: `question: str`; output: `answer: str`, expected 1–5 words). The ReAct loop iteratively reasons and decides whether to call the `retrieve` tool or produce a final answer.
+**Module layer:** `PhantomWikiReAct` (`src/program/phantomwiki_module.py`) owns a `dspy.Retrieve(k=10)` retriever and a `dspy.ReAct` loop (max 50 iterations) bound to the `AnswerQuestion` signature and three tools. Notes state is stored in `threading.local()` for thread-safety during parallel evaluation. Each call to `forward` resets the notes workspace.
 
-**Tool layer:** The `retrieve` function (`src/program/tools/retrieve.py`) is a plain Python callable exposed to the ReAct agent. It instantiates a module-level `PhantomWikiRetriever` singleton and delegates queries to it, returning a concatenated string of passages.
+**Signature:** `AnswerQuestion` contains a 4-step structured prompt: classify question type → exhaust all anchor entities via repeated searches → process each anchor independently (COUNT returns distinct numeric counts, ENTITY/ATTRIBUTE returns union of results) → verify via notes before calling finish. Output is `list[str]` covering all correct answers.
 
-**Retriever layer:** `PhantomWikiRetriever` (`src/retriever/retriever.py`) is a `dspy.Module` wrapping `dspy.Retrieve(k=3)`. Given a query string, it retrieves the top-3 passages from the configured DSPy retrieval backend and joins them with double newlines.
+**Tools:** `search_wiki(query)` retrieves k=10 passages via ColBERTv2 and returns them joined. `take_notes(key, note)` saves findings to a thread-local dict. `read_notes(key)` reads one or all notes, enabling the agent to review its accumulated findings before finalizing the answer.
 
-**Data flow:** A raw `question` string enters `PhantomWikiReActPipeline.forward` → passed to `PhantomWikiReActAgent.forward` → consumed by the `dspy.ReAct` loop, which may call `retrieve(query)` one or more times → each call fetches 3 passages via `PhantomWikiRetriever` → passages are returned to the ReAct loop as context → the loop produces a final short `answer` string.
+**Data flow:** question → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` (reset notes) → `dspy.ReAct` loop (classify → search anchors → take_notes → process each anchor → read_notes → finish) → `dspy.Prediction(answer=list[str])`.
 
-**Metric:** `phantomwiki_f1_feedback` (`src/metric/metric.py`) compares `pred.answer` to `example.answer` using `dspy.evaluate.answer_exact_match`, returning a binary 0/1 score. Despite the "F1" name, the current implementation performs exact match evaluation. This metric drives optimization of the DSPy program (e.g., prompt tuning or few-shot example selection via a DSPy optimizer).
+**Metric:** `phantomwiki_f1_feedback` uses `dspy.evaluate.answer_exact_match` for binary scoring of `pred.answer` vs `example.answer`.
 ```

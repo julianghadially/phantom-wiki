@@ -168,6 +168,11 @@ class PhantomWikiQA(dspy.Signature):
        - second uncle/second aunt = grandparent's SIBLING (sibling of parent's parent)
        - cousin = parent's sibling's child (children of uncles/aunts)
        - second cousin = grandparent's sibling's grandchild
+       - first cousin once removed = BIDIRECTIONAL relationship — check BOTH directions:
+         (a) Your parent's first cousin [one generation older than you], OR
+         (b) Your first cousin's child [one generation younger than you].
+         When asked for 'the first cousin once removed of X', search both upward (X's
+         parent's cousins) AND downward (X's first cousins' children).
        - GENDER is critical: 'uncle'/'brother'/'grandson'/'son' = MALE ONLY.
          'aunt'/'sister'/'granddaughter'/'daughter' = FEMALE ONLY.
          Apply gender filter when counting or identifying relatives.

@@ -193,25 +193,27 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: Two-Phase Anchor Expansion (scope-restricted) + Chain Traversal ReAct with Answer Deduplication (AnchorExpanderModule + PhantomWikiQA)
+## ARCHITECTURE TITLE: Parallel Per-Entity Sub-Agents with Anchor Expansion (AnchorExpanderModule + PerEntityProcessor + ThreadPoolExecutor)
 
 ## ARCHITECTURE SUMMARY:
-The system is a two-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs two sequential `dspy.ReAct` agents.
+The system is a three-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs parallel per-entity sub-agents for multi-anchor questions.
 
-Phase 1 uses `AnchorExpanderModule` (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig` to find ALL people in the wiki matching the anchor property (occupation, hobby, DOB). The signature explicitly forbids family/relationship traversal and chain reasoning — it only searches for the property value itself. Phase 2 uses the full anchor entity list as context and runs the main `PhantomWikiQA` ReAct agent (k=10, max_iters=35) to process EACH anchor entity and collect all answers. Final answers are deduplicated (case-insensitive, order-preserving) before returning.
+Phase 1 uses `AnchorExpanderModule` (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig` to find ALL people matching the anchor property. Phase 2 dispatches per-entity work: for multiple anchors, `_parallel_process()` runs `PerEntityProcessor` instances in parallel batches of 4 using `ThreadPoolExecutor` with `contextvars.copy_context()` for DSPy context propagation; for a single anchor, one `PerEntityProcessor` runs directly; for no anchor, a full `PhantomWikiQA` ReAct fallback is used. Each `PerEntityProcessor` uses `SingleAnchorQA` (k=10, max_iters=15) to follow the relationship chain for exactly one entity. Final answers are deduplicated (case-insensitive, order-preserving) before returning.
 
 ## ARCHITECTURE DESCRIPTION:
 **Entry Point — `src/program/phantomwiki_pipeline.py`**
 `PhantomWikiReActPipeline` is the top-level `dspy.Module`. Its `forward(question)` method sets a DSPy context with a ColBERTv2 retriever (`CountingRM`) and GPT-4.1-mini LM, then delegates to `PhantomWikiReAct` from `phantomwiki_module.py`.
 
 **Core Module — `src/program/phantomwiki_module.py`**
-`PhantomWikiReAct` implements the two-phase strategy:
-- **Phase 1 — `AnchorExpanderModule`**: A dedicated `dspy.ReAct` agent (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig`. The signature enforces that searches target ONLY the property value (e.g., "occupation financial controller"), explicitly prohibiting any family member, sibling, parent, or relationship lookups. Runs 3-5 varied phrasings of the same property lookup to find all matching people.
-- **Phase 2 — Main `react`**: A `dspy.ReAct` agent (k=10, max_iters=35) guided by `PhantomWikiQA`. Receives the pre-built anchor list as `anchor_entities_context` and processes EACH entity to follow the relationship chain. Distinguishes counting vs. naming questions and aggregates all verified answers.
-- **Answer Deduplication**: After Phase 2, `forward()` deduplicates the answer list case-insensitively while preserving original order before returning `dspy.Prediction(answer=deduped)`.
+`PhantomWikiReAct` implements the three-strategy approach:
+- **Phase 1 — `AnchorExpanderModule`**: A dedicated `dspy.ReAct` agent (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig`. The signature enforces that searches target ONLY the property value, explicitly prohibiting family/relationship traversal. Rule #6 handles named-person questions by immediately returning the name without searching. Runs 3-5 varied phrasings to find all matching people.
+- **Phase 2a — Parallel `PerEntityProcessor` (multiple anchors)**: `_parallel_process()` batches anchor entities in groups of 4 and runs each `PerEntityProcessor` in a `ThreadPoolExecutor` thread. DSPy LM/RM context is propagated via `contextvars.copy_context().run()`. Each processor uses a focused `SingleAnchorQA` ReAct (k=10, max_iters=15) to follow the relationship chain for exactly one entity and return its answer contribution.
+- **Phase 2b — Single `PerEntityProcessor` (one anchor)**: When only one anchor entity is found, `PerEntityProcessor` is called directly without threading overhead.
+- **Phase 2c — Fallback `PhantomWikiQA` ReAct (no anchors)**: When anchor expansion finds nothing, a full `dspy.ReAct` (k=10, max_iters=35) guided by `PhantomWikiQA` runs without pre-identified anchors.
+- **Answer Deduplication**: All collected answers are deduplicated case-insensitively while preserving original order before returning `dspy.Prediction(answer=deduped)`.
 
 **Data Flow:**
-`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → `AnchorExpanderModule` (Phase 1, up to 15 iters, property-only searches) → anchor entity list → `PhantomWikiQA` react agent (Phase 2, up to 35 iters) → aggregated answer list → deduplication → `dspy.Prediction(answer=deduped)`.
+`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → `AnchorExpanderModule` (Phase 1) → anchor entity list → [if >1: parallel `PerEntityProcessor` batches | if 1: single `PerEntityProcessor` | if 0: `PhantomWikiQA` ReAct fallback] → aggregated answer list → deduplication → `dspy.Prediction(answer=deduped)`.
 
 **Retriever — `src/program/counting_rm.py`**
 `CountingRM` wraps a `dspy.ColBERTv2` retriever with retry logic, timeout patching, and call counting. Used via `dspy.Retrieve(k=15)` in Phase 1 and `dspy.Retrieve(k=10)` in Phase 2.

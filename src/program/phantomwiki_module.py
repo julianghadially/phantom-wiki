@@ -1,3 +1,6 @@
+import contextvars
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import dspy
 
 
@@ -28,6 +31,9 @@ class AnchorExpansionSig(dspy.Signature):
     4. In this wiki, each property value is typically shared by 5-15+ people.
        Run 3-5 searches with DIFFERENT PHRASINGS of the SAME property lookup to find them all.
     5. If you cannot find anyone after 4 searches, return an empty list.
+    6. NAMED PERSON CASE: If the question directly names a specific person (e.g. "Forest Benner",
+       "Deon Gall"), immediately return that person's name as the single anchor entity.
+       Do NOT search. Do NOT traverse their family tree. Just return their name.
     """
     question: str = dspy.InputField(
         desc="Question containing a property-based entity lookup"
@@ -57,6 +63,66 @@ class AnchorExpanderModule(dspy.Module):
             return self.react(question=question)
         except Exception:
             return dspy.Prediction(anchor_entities=[])
+
+
+# ── Per-Entity Processor ──────────────────────────────────────────────────────
+
+class SingleAnchorQA(dspy.Signature):
+    """Answer a question by starting from ONE specific anchor entity.
+
+    You are processing ONE anchor entity in a multi-entity question.
+    Follow the relationship chain described in the question FROM THIS SINGLE ENTITY ONLY.
+
+    EXAMPLES:
+    - Question: "How many brothers-in-law does the person whose hobby is die-cast toy have?"
+      Anchor: "Refugio Crum"
+      → Search for Refugio Crum, find their spouse, count spouse's brothers, return that number.
+
+    - Question: "What is the occupation of the grandchild of the person whose DOB is 0918-01-17?"
+      Anchor: "Loraine Moritz"
+      → Search for Loraine Moritz's children, then their children (grandchildren), find occupation.
+
+    COUNTING vs NAMING — CRITICAL:
+    - "How many X does [anchor] have?" → return exactly ONE NUMBER like "3", "0", "7"
+      NEVER return person names for a counting question.
+    - "Who is the X of [anchor]?" → return person NAME(s)
+    - "What is the occupation/hobby/DOB of [anchor]?" → return that value
+
+    SEARCH STRATEGY:
+    1. Search for the anchor entity by name to get their full profile
+    2. Follow the chain step-by-step, searching each intermediate entity
+    3. Read ALL returned passages carefully — extract all relevant names/values
+
+    If you cannot find a verifiable answer for this anchor entity, return an empty list.
+    """
+    question: str = dspy.InputField(desc="The original question")
+    anchor_entity: str = dspy.InputField(desc="The specific anchor entity to process")
+    answer: list[str] = dspy.OutputField(
+        desc="Answer(s) found for this anchor entity. ONE number for counting questions."
+    )
+
+
+class PerEntityProcessor(dspy.Module):
+    """Process a single anchor entity and return the answer contribution."""
+    def __init__(self):
+        self.retrieve = dspy.Retrieve(k=10)
+        self.react = dspy.ReAct(
+            signature=SingleAnchorQA,
+            tools=[self.search_wiki],
+            max_iters=15,
+        )
+
+    def search_wiki(self, query: str) -> str:
+        """Search the PhantomWiki corpus. Returns up to 10 relevant passages."""
+        results = self.retrieve(query)
+        return "\n\n".join(results.passages)
+
+    def forward(self, question: str, anchor_entity: str) -> dspy.Prediction:
+        try:
+            result = self.react(question=question, anchor_entity=anchor_entity)
+            return dspy.Prediction(answer=result.answer or [])
+        except Exception:
+            return dspy.Prediction(answer=[])
 
 
 # ── Main Q&A ──────────────────────────────────────────────────────────────────
@@ -107,6 +173,7 @@ class PhantomWikiQA(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.anchor_expander = AnchorExpanderModule()
+        self.entity_processor = PerEntityProcessor()
         self.retrieve = dspy.Retrieve(k=10)
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
@@ -123,6 +190,35 @@ class PhantomWikiReAct(dspy.Module):
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
 
+    def _parallel_process(self, question: str, anchor_entities: list, max_parallel: int = 4) -> list:
+        """Process anchor entities in parallel batches of max_parallel.
+
+        Uses contextvars.copy_context() to propagate DSPy's LM/RM context to threads.
+        """
+        ctx = contextvars.copy_context()
+        all_answers = []
+
+        for i in range(0, len(anchor_entities), max_parallel):
+            batch = anchor_entities[i:i + max_parallel]
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                futures = {
+                    executor.submit(
+                        ctx.run,
+                        self.entity_processor,
+                        question=question,
+                        anchor_entity=entity,
+                    ): entity
+                    for entity in batch
+                }
+                for future in as_completed(futures):
+                    try:
+                        pred = future.result()
+                        all_answers.extend(pred.answer or [])
+                    except Exception:
+                        pass
+
+        return all_answers
+
     def forward(self, question):
         # Phase 1: expand anchor entities
         try:
@@ -131,27 +227,30 @@ class PhantomWikiReAct(dspy.Module):
         except Exception:
             anchor_entities = []
 
-        if anchor_entities:
-            count = len(anchor_entities)
-            anchor_context = (
-                f"Found {count} anchor {'entity' if count == 1 else 'entities'}: "
-                f"{anchor_entities}. Process EACH one to collect all answers."
+        # Phase 2: choose processing strategy based on anchor count
+        if len(anchor_entities) > 1:
+            # Multiple anchors: use parallel per-entity processing (max 4 at a time)
+            all_answers = self._parallel_process(question, anchor_entities, max_parallel=4)
+        elif len(anchor_entities) == 1:
+            # Single anchor: use focused per-entity processor
+            pred = self.entity_processor(
+                question=question, anchor_entity=anchor_entities[0]
             )
+            all_answers = pred.answer or []
         else:
-            anchor_context = (
-                "No anchor entities pre-identified. Determine them during your search."
+            # No anchors found: fall back to full ReAct without anchor context
+            result = self.react(
+                question=question,
+                anchor_entities_context=(
+                    "No anchor entities pre-identified. Determine them during your search."
+                ),
             )
-
-        # Phase 2: chain traversal using full anchor list
-        result = self.react(
-            question=question,
-            anchor_entities_context=anchor_context,
-        )
+            all_answers = result.answer or []
 
         # Deduplicate while preserving order
         seen = set()
         deduped = []
-        for a in (result.answer or []):
+        for a in all_answers:
             key = a.strip().lower()
             if key not in seen:
                 seen.add(key)

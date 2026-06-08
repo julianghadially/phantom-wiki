@@ -98,7 +98,7 @@ class SingleAnchorQA(dspy.Signature):
     question: str = dspy.InputField(desc="The original question")
     anchor_entity: str = dspy.InputField(desc="The specific anchor entity to process")
     answer: list[str] = dspy.OutputField(
-        desc="Answer(s) found for this anchor entity. ONE number for counting questions."
+        desc="ALL answers found for this anchor entity. Include EVERY name, number, or value found across all branches. If multiple intermediate entities each contribute answers, include ALL of them — do NOT collapse to one answer."
     )
 
 
@@ -231,19 +231,21 @@ class PhantomWikiReAct(dspy.Module):
         if len(anchor_entities) > 1:
             # Multiple anchors: use parallel per-entity processing (max 4 at a time)
             all_answers = self._parallel_process(question, anchor_entities, max_parallel=4)
-        elif len(anchor_entities) == 1:
-            # Single anchor: use focused per-entity processor
-            pred = self.entity_processor(
-                question=question, anchor_entity=anchor_entities[0]
-            )
-            all_answers = pred.answer or []
         else:
-            # No anchors found: fall back to full ReAct without anchor context
+            # Single anchor or no anchor: use original full ReAct (better for complex chains)
+            if anchor_entities:
+                anchor_context = (
+                    f"Found 1 anchor entity: {anchor_entities}. "
+                    "Process it to collect ALL answers. Note: there may be multiple "
+                    "intermediate entities in the chain — explore ALL branches thoroughly."
+                )
+            else:
+                anchor_context = (
+                    "No anchor entities pre-identified. Determine them during your search."
+                )
             result = self.react(
                 question=question,
-                anchor_entities_context=(
-                    "No anchor entities pre-identified. Determine them during your search."
-                ),
+                anchor_entities_context=anchor_context,
             )
             all_answers = result.answer or []
 

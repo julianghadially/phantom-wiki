@@ -193,26 +193,25 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: Two-Phase ReAct with Exhaustive Search Pass (PhantomWikiMainSignature + PhantomWikiExhaustiveSignature)
+## ARCHITECTURE TITLE: Single-Phase ReAct with Balanced Multi-Answer Instructions and Verification Rule (PhantomWikiQA)
 
 ## ARCHITECTURE SUMMARY:
-The system is a two-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs two sequential `dspy.ReAct` agents to fix the "singleton assumption" failure mode where the model finds one answer and stops.
+The system is a single-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs a single `dspy.ReAct` agent (max 50 iters) guided by the `PhantomWikiQA` signature.
 
-Phase 1 (`react_main` with `PhantomWikiMainSignature`, max 40 iters) exhaustively searches for all initial answers. Phase 2 (`react_exhaustive` with `PhantomWikiExhaustiveSignature`, max 15 iters) receives the Phase 1 answers and explicitly searches for additional answers that were missed. The two answer sets are deduplicated and merged before returning.
+The signature provides balanced instructions: read ALL search result passages, expect multiple correct answers, traverse family trees systematically, return bare values only (no "Person: value" format), and include only answers verified by retrieved passages. This replaces the previous two-phase approach where Phase 2 hallucinated wrong answers and collapsed precision.
 
 ## ARCHITECTURE DESCRIPTION:
 **Entry Point — `src/program/phantomwiki_pipeline.py`**
 `PhantomWikiReActPipeline` is the top-level `dspy.Module`. Its `forward(question)` method sets a DSPy context with a ColBERTv2 retriever (`CountingRM`) and GPT-4.1-mini LM, then delegates to `PhantomWikiReAct` from `phantomwiki_module.py`.
 
 **Core Module — `src/program/phantomwiki_module.py`**
-`PhantomWikiReAct` implements the two-phase search strategy:
-- `react_main`: A `dspy.ReAct` agent using `PhantomWikiMainSignature`. The signature instructs the model that most questions have MULTIPLE correct answers, to never stop after finding one, and to search exhaustively across birthdates, relationships, and family branches. Runs up to 40 iterations.
-- `react_exhaustive`: A `dspy.ReAct` agent using `PhantomWikiExhaustiveSignature`. Given the initial answers already found, it is explicitly prompted to search for REMAINING answers via alternative phrasings, unexplored family branches, and sibling-node traversal. Runs up to 15 iterations.
-- Both agents share the same `search_wiki` tool backed by `dspy.Retrieve(k=10)`.
-- Final answers from both phases are merged with deduplication (case-insensitive, order-preserving).
+`PhantomWikiReAct` implements the single-phase search strategy:
+- `react`: A single `dspy.ReAct` agent using `PhantomWikiQA` signature. The signature instructs the model to: (1) read ALL returned passages per search call, not just the first match; (2) expect and find multiple correct answers; (3) traverse every branch of family trees systematically; (4) return bare values only without "Person: value" format; (5) include only answers explicitly verified by retrieved passages. Runs up to 50 iterations.
+- The `search_wiki` tool is backed by `dspy.Retrieve(k=10)` for broad coverage.
+- No post-processing or deduplication needed — the agent returns a verified answer list directly.
 
 **Data Flow:**
-`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → Phase 1 `react_main` (multi-step loop, up to 40 iters) → Phase 2 `react_exhaustive` (multi-step loop, up to 15 iters, receives Phase 1 answers) → deduplicated combined answer list → `dspy.Prediction(answer=combined)`.
+`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → single `react` agent (multi-step loop, up to 50 iters) → verified answer list → `dspy.Prediction(answer=result.answer)`.
 
 **Retriever — `src/program/counting_rm.py`**
 `CountingRM` wraps a `dspy.ColBERTv2` retriever with retry logic, timeout patching, and call counting. Used via `dspy.Retrieve(k=10)` inside `PhantomWikiReAct`.

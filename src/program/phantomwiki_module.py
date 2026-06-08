@@ -1,100 +1,57 @@
 import dspy
 
 
-class PhantomWikiMainSignature(dspy.Signature):
-    """You are a research assistant answering questions about a fictional wiki universe with many characters.
+class PhantomWikiQA(dspy.Signature):
+    """Answer questions about a fictional wiki universe. Provide accurate and complete answers.
 
-    CRITICAL: Most questions have MULTIPLE correct answers. Your job is to find ALL of them.
+    HOW TO ANSWER:
 
-    Core strategy:
-    1. NEVER assume a question has only one answer. Multiple people can share birthdates, hobbies, occupations, and relationships.
-    2. After finding the FIRST answer, ALWAYS keep searching for MORE:
-       - Search "other people born on [DATE]"
-       - Search "other people whose [PROPERTY] is [VALUE]"
-       - For family questions, find ALL relatives (all grandchildren, ALL nephews, ALL cousins)
-    3. For multi-hop chains (e.g., "great-grandchild of the great-grandfather of X"):
-       - First find the correct ancestor (verify the generation count carefully)
-       - Then enumerate ALL descendants at the target generation across ALL branches
-    4. For birthdate/property questions: multiple people WILL share the property; find them ALL
-    5. Search exhaustively with varied queries before concluding you have all answers
-    6. A single-item answer list is almost always incomplete - verify with additional searches
+    1. READ ALL SEARCH RESULTS: When you receive search results, read every passage carefully.
+       Multiple passages may contain different people matching the same condition (birthdate, hobby, etc.).
+       Extract ALL matching entities from the returned passages, not just the first one you notice.
 
-    Common failure to AVOID: Finding one answer and immediately calling finish. Always search for more.
+    2. MULTIPLE CORRECT ANSWERS: Many questions have multiple correct answers because:
+       - Multiple people can share the same birthdate, hobby, or occupation
+       - A person may have many relatives (many nephews, grandchildren, etc.)
+       After reviewing initial search results, do 1-2 additional targeted searches to find further matches.
+       Use queries like "other people born on [DATE]" or "[PERSON] siblings" to enumerate more.
+
+    3. FAMILY TREE TRAVERSAL: For relationship questions (nephew, cousin, grandchild, etc.):
+       - Find ALL intermediate entities at each hop, not just one
+       - For each intermediate person, find ALL their relevant relatives
+       - Explore every branch of the family tree systematically
+
+    4. ANSWER FORMAT: Return only the requested values (names, dates, occupations, or numbers).
+       Do NOT use "Person: value" or "Name: X" format. Just return the bare values.
+       Example: return ["0", "2", "5"] not ["Alice: 0", "Bob: 2", "Carol: 5"]
+
+    5. ONLY VERIFIED ANSWERS: Include only answers explicitly supported by search results.
+       Do not guess or include entities you cannot directly verify from the wiki passages.
     """
-    question: str = dspy.InputField(desc="The question to answer - almost always has multiple correct answers")
+    question: str = dspy.InputField(desc="The question to answer about the wiki universe")
     answer: list[str] = dspy.OutputField(
-        desc="ALL answers satisfying the question. Be exhaustive - every person, hobby, occupation, or value that qualifies. A single-item list likely means you stopped too early."
-    )
-
-
-class PhantomWikiExhaustiveSignature(dspy.Signature):
-    """You are performing a SECOND search pass to find answers that were missed in the first pass.
-
-    Your task: Given the question and the initial_answers already found, search specifically for
-    ADDITIONAL answers that were NOT found yet. Focus on unexplored branches and alternative entities.
-
-    Search strategies for finding REMAINING answers:
-    1. For birthdate questions: search "born [YEAR]-[MONTH]" variations to find more people with same date
-    2. For property questions: search "[PROPERTY] [VALUE]" with different phrasings
-    3. For family questions: explore siblings of already-found intermediate nodes; check other family branches
-    4. Try searching by name variations of entities found in the first pass to find their relatives
-    5. For each found person, search for "family of [NAME]" or "[NAME] children/siblings/relatives"
-
-    Return initial_answers PLUS all new answers you discover. Do not drop any answers from initial_answers.
-    """
-    question: str = dspy.InputField(desc="The original question")
-    initial_answers: str = dspy.InputField(desc="Answers already found in the first search pass - do not repeat searching for these")
-    answer: list[str] = dspy.OutputField(
-        desc="Complete answer list: all of initial_answers PLUS any new answers discovered in this second pass"
+        desc="All verified answers found in search results. Return bare values only (no 'Person: value' format)."
     )
 
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=10)
-        self.react_main = dspy.ReAct(
-            signature=PhantomWikiMainSignature,
+        self.react = dspy.ReAct(
+            signature=PhantomWikiQA,
             tools=[self.search_wiki],
-            max_iters=40,
-        )
-        self.react_exhaustive = dspy.ReAct(
-            signature=PhantomWikiExhaustiveSignature,
-            tools=[self.search_wiki],
-            max_iters=15,
+            max_iters=50,
         )
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns up to 10 relevant passages.
 
-        Tips for exhaustive search:
-        - After finding one person, search for OTHERS with the same property
-        - Use variations: "born on DATE", "date of birth DATE", "DOB DATE"
-        - For relationships: search both directions (find X's parent, then find ALL children of that parent)
-        - Search family members by name to find their articles and discover more relatives
+        Read ALL returned passages carefully - multiple passages may contain different
+        people or entities that match the search condition.
         """
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
 
     def forward(self, question):
-        # Phase 1: Main reasoning - find initial answers
-        main_result = self.react_main(question=question)
-        initial_answers = main_result.answer if isinstance(main_result.answer, list) else [str(main_result.answer)]
-
-        # Phase 2: Exhaustive search for remaining answers
-        initial_str = ", ".join(str(a) for a in initial_answers) if initial_answers else "none found yet"
-        exhaustive_result = self.react_exhaustive(
-            question=question,
-            initial_answers=initial_str,
-        )
-        exhaustive_answers = exhaustive_result.answer if isinstance(exhaustive_result.answer, list) else [str(exhaustive_result.answer)]
-
-        # Combine answers: initial + new ones from second pass (deduplicated, preserving order)
-        seen = set()
-        combined = []
-        for ans in initial_answers + exhaustive_answers:
-            key = str(ans).strip().lower()
-            if key not in seen and key:
-                seen.add(key)
-                combined.append(ans)
-
-        return dspy.Prediction(answer=combined)
+        result = self.react(question=question)
+        return dspy.Prediction(answer=result.answer)

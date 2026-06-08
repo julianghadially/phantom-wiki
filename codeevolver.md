@@ -193,26 +193,30 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: PhantomWiki ReAct RAG Pipeline with Token-Level F1 Evaluation
+## ARCHITECTURE TITLE: Two-Phase ReAct with Exhaustive Search Pass (PhantomWikiMainSignature + PhantomWikiExhaustiveSignature)
 
 ## ARCHITECTURE SUMMARY:
-The system is a Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base using a ReAct (Reasoning + Acting) agent. The pipeline is composed of three modules: `PhantomWikiReActPipeline` (the top-level orchestrator), `PhantomWikiReActAgent` (the DSPy ReAct reasoning loop), and `PhantomWikiRetriever` (an HTTP-based document retrieval client).
+The system is a two-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs two sequential `dspy.ReAct` agents to fix the "singleton assumption" failure mode where the model finds one answer and stops.
 
-Given a question, the agent iteratively reasons and issues retrieval queries until it synthesizes a final answer. Answers are evaluated against gold labels using a token-level F1 metric defined in `src.metric.metric` and computed by `src.metric.f1`.
+Phase 1 (`react_main` with `PhantomWikiMainSignature`, max 40 iters) exhaustively searches for all initial answers. Phase 2 (`react_exhaustive` with `PhantomWikiExhaustiveSignature`, max 15 iters) receives the Phase 1 answers and explicitly searches for additional answers that were missed. The two answer sets are deduplicated and merged before returning.
 
 ## ARCHITECTURE DESCRIPTION:
-**Entry Point — `src/program/phantomwiki_pipeline/PhantomWikiReActPipeline.py`**
-`PhantomWikiReActPipeline` is the top-level `dspy.Module`. Its `forward(question: str)` method instantiates and calls the agent, then returns a `dspy.Prediction(answer=...)`. It owns both the retriever and agent instances and wires the retriever's `forward` method as a tool for the agent.
+**Entry Point — `src/program/phantomwiki_pipeline.py`**
+`PhantomWikiReActPipeline` is the top-level `dspy.Module`. Its `forward(question)` method sets a DSPy context with a ColBERTv2 retriever (`CountingRM`) and GPT-4.1-mini LM, then delegates to `PhantomWikiReAct` from `phantomwiki_module.py`.
 
-**Agent — `src/program/phantomwiki_pipeline/agent.py`**
-`PhantomWikiReActAgent` wraps DSPy's built-in `dspy.ReAct` module configured with the signature `"question -> answer"` and a list of tools (the retriever). The ReAct loop autonomously decides when and how many times to invoke the retrieval tool, interleaving reasoning steps ("Thought") with tool calls ("Act") until a final answer is produced.
-
-**Retriever — `src/program/phantomwiki_pipeline/retriever.py`**
-`PhantomWikiRetriever` is a plain Python class (not a `dspy.Module`) that issues HTTP GET requests to an external retrieval service whose URL is set via the `RETRIEVER_URL` environment variable. It accepts a `query: str` and returns the JSON response body (retrieved document strings) or an error message on failure. This is the only I/O boundary in the pipeline.
+**Core Module — `src/program/phantomwiki_module.py`**
+`PhantomWikiReAct` implements the two-phase search strategy:
+- `react_main`: A `dspy.ReAct` agent using `PhantomWikiMainSignature`. The signature instructs the model that most questions have MULTIPLE correct answers, to never stop after finding one, and to search exhaustively across birthdates, relationships, and family branches. Runs up to 40 iterations.
+- `react_exhaustive`: A `dspy.ReAct` agent using `PhantomWikiExhaustiveSignature`. Given the initial answers already found, it is explicitly prompted to search for REMAINING answers via alternative phrasings, unexplored family branches, and sibling-node traversal. Runs up to 15 iterations.
+- Both agents share the same `search_wiki` tool backed by `dspy.Retrieve(k=10)`.
+- Final answers from both phases are merged with deduplication (case-insensitive, order-preserving).
 
 **Data Flow:**
-`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReActAgent.forward` → `dspy.ReAct` (multi-step loop) ↔ `PhantomWikiRetriever.forward` (HTTP GET to retrieval service) → final `answer` → `dspy.Prediction`.
+`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → Phase 1 `react_main` (multi-step loop, up to 40 iters) → Phase 2 `react_exhaustive` (multi-step loop, up to 15 iters, receives Phase 1 answers) → deduplicated combined answer list → `dspy.Prediction(answer=combined)`.
+
+**Retriever — `src/program/counting_rm.py`**
+`CountingRM` wraps a `dspy.ColBERTv2` retriever with retry logic, timeout patching, and call counting. Used via `dspy.Retrieve(k=10)` inside `PhantomWikiReAct`.
 
 **Metric — `src/metric/metric.py` + `src/metric/f1.py`**
-`phantomwiki_f1_feedback` extracts `prediction.answer` and `example.answer`, then delegates to `compute_f1` in `src/metric/f1.py`. `compute_f1` tokenizes both strings by whitespace (lowercased), counts token overlap, and computes precision, recall, and their harmonic mean (F1). The metric returns a float in [0, 1] and is used as the optimization signal for DSPy's compiler/optimizer.
+`phantomwiki_f1_feedback` computes token-level F1 between `prediction.answer` and `example.answer` via `compute_f1`. Returns a float in [0, 1].
 ```

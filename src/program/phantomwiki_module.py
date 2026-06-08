@@ -98,7 +98,7 @@ class SingleAnchorQA(dspy.Signature):
     question: str = dspy.InputField(desc="The original question")
     anchor_entity: str = dspy.InputField(desc="The specific anchor entity to process")
     answer: list[str] = dspy.OutputField(
-        desc="ALL answers found for this anchor entity. Include EVERY name, number, or value found across all branches. If multiple intermediate entities each contribute answers, include ALL of them — do NOT collapse to one answer."
+        desc="Answer(s) found for this anchor entity. ONE number for counting questions ('how many'). ALL relevant names/values for other question types."
     )
 
 

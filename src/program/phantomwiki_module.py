@@ -26,8 +26,11 @@ class AnchorExpansionSig(dspy.Signature):
          "date of birth 1050-09-16" / "born on 1050-09-16"
     2. DO NOT search for family members, relatives, siblings, parents, children, or
        ANY relationship. Do NOT traverse family trees. Do NOT answer the full question.
-    3. Stop and return as soon as you have listed all people with the property.
-       Do NOT continue researching after finding the people.
+    3. STOP RULE: Once you have found people matching the property, call finish IMMEDIATELY.
+       Your output must ONLY contain names of people who DIRECTLY POSSESS the anchor property.
+       Do NOT follow 'of the X of Y' relationship chains. Do NOT traverse family trees.
+       Do NOT compute or research anything beyond the identity of property holders.
+       The moment you have a list of names, output them and stop.
     4. In this wiki, each property value is typically shared by 5-15+ people.
        Run 3-5 searches with DIFFERENT PHRASINGS of the SAME property lookup to find them all.
     5. If you cannot find anyone after 4 searches, return an empty list.
@@ -109,7 +112,7 @@ class PerEntityProcessor(dspy.Module):
         self.react = dspy.ReAct(
             signature=SingleAnchorQA,
             tools=[self.search_wiki],
-            max_iters=15,
+            max_iters=28,
         )
 
     def search_wiki(self, query: str) -> str:
@@ -153,10 +156,23 @@ class PhantomWikiQA(dspy.Signature):
        If 5 anchor entities each have a different count, return ALL 5 counts.
        Do NOT discard answers — include every distinct value found.
 
-    5. FAMILY TREE TRAVERSAL: For relationship questions, find ALL intermediate entities
-       at each hop and explore every branch systematically. Do not stop after the first match.
+    5. LEVEL-INVENTORY TRAVERSAL: At EACH hop in a relationship chain, inventory
+       ALL entities at that level before proceeding to the next hop. Do NOT stop
+       after the first match — explore EVERY branch.
+       Example approach: "Level 0: [starting entity] → Level 1: [ALL children/
+       parents/siblings found] → Level 2: [ALL entities at next hop] → ..."
+       Check every branch. Missing one branch means missing valid answers.
 
-    6. VERIFIED ANSWERS ONLY: Only include answers explicitly supported by search results.
+    6. EXTENDED FAMILY DEFINITIONS (apply precisely):
+       - uncle/aunt = parent's SIBLING (one generation up from parent)
+       - second uncle/second aunt = grandparent's SIBLING (sibling of parent's parent)
+       - cousin = parent's sibling's child (children of uncles/aunts)
+       - second cousin = grandparent's sibling's grandchild
+       - GENDER is critical: 'uncle'/'brother'/'grandson'/'son' = MALE ONLY.
+         'aunt'/'sister'/'granddaughter'/'daughter' = FEMALE ONLY.
+         Apply gender filter when counting or identifying relatives.
+
+    7. VERIFIED ANSWERS ONLY: Only include answers explicitly supported by search results.
        Do not guess. If you cannot verify an answer for an anchor entity, skip that entity.
     """
     question: str = dspy.InputField(
@@ -193,9 +209,12 @@ class PhantomWikiReAct(dspy.Module):
     def _parallel_process(self, question: str, anchor_entities: list, max_parallel: int = 4) -> list:
         """Process anchor entities in parallel batches of max_parallel.
 
-        Uses contextvars.copy_context() to propagate DSPy's LM/RM context to threads.
+        Uses a fresh contextvars.copy_context() per submitted task to correctly
+        propagate DSPy's LM/RM context to each worker thread independently.
+        IMPORTANT: Each task needs its OWN copy — CPython's Context.run() sets
+        an object-level ctx_entered flag (not per-thread), so sharing one Context
+        across concurrent threads causes all but the first to silently fail.
         """
-        ctx = contextvars.copy_context()
         all_answers = []
 
         for i in range(0, len(anchor_entities), max_parallel):
@@ -203,7 +222,7 @@ class PhantomWikiReAct(dspy.Module):
             with ThreadPoolExecutor(max_workers=len(batch)) as executor:
                 futures = {
                     executor.submit(
-                        ctx.run,
+                        contextvars.copy_context().run,
                         self.entity_processor,
                         question=question,
                         anchor_entity=entity,

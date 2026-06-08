@@ -6,30 +6,34 @@ import dspy
 class AnchorExpansionSig(dspy.Signature):
     """Find ALL people in the wiki that match the anchor property in the question.
 
-    Your ONLY goal is to enumerate every person who has the specific property
-    mentioned in the question. Do NOT attempt to answer the full question.
+    YOUR ONLY GOAL: enumerate every person who has the specific property value
+    mentioned in the question. NOTHING ELSE.
 
-    PATTERNS TO DETECT in the question:
+    WHAT IS AN ANCHOR PROPERTY:
     - "the person whose occupation is X" -> find ALL people with occupation X
     - "the person whose hobby is X"      -> find ALL people with hobby X
     - "the person whose date of birth is X" -> find ALL people born on date X
     - If no property lookup (question directly names a person): return just that person's name
 
-    CRITICAL: In this wiki, occupations, hobbies, and birthdates are shared by
-    MANY people (typically 5-15+ each). You MUST run at least 4-5 different
-    search queries (varying the phrasing) to find ALL of them.
-    Examples:
-      - "occupation financial controller", "job financial controller", "works as financial controller"
-      - "hobby microbiology", "microbiology hobby", "interest microbiology"
-      - "born on 1050-09-16", "date of birth 1050-09-16", "birthday 1050-09-16", "born 1050"
-    Keep searching until two consecutive searches yield no new names.
-    Extract EVERY person name you see in the results that matches the property.
+    CRITICAL RULES:
+    1. ONLY search for people who HAVE the property. Search queries must be about
+       the property value ONLY. Examples:
+         "occupation financial controller"
+         "hobby microbiology"
+         "date of birth 1050-09-16" / "born on 1050-09-16"
+    2. DO NOT search for family members, relatives, siblings, parents, children, or
+       ANY relationship. Do NOT traverse family trees. Do NOT answer the full question.
+    3. Stop and return as soon as you have listed all people with the property.
+       Do NOT continue researching after finding the people.
+    4. In this wiki, each property value is typically shared by 5-15+ people.
+       Run 3-5 searches with DIFFERENT PHRASINGS of the SAME property lookup to find them all.
+    5. If you cannot find anyone after 4 searches, return an empty list.
     """
     question: str = dspy.InputField(
         desc="Question containing a property-based entity lookup"
     )
     anchor_entities: list[str] = dspy.OutputField(
-        desc="ALL person names matching the anchor property. Must be comprehensive - run multiple searches."
+        desc="ALL person names matching the anchor property. Only people with the property — no family members."
     )
 
 
@@ -144,4 +148,12 @@ class PhantomWikiReAct(dspy.Module):
             anchor_entities_context=anchor_context,
         )
 
-        return dspy.Prediction(answer=result.answer)
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for a in (result.answer or []):
+            key = a.strip().lower()
+            if key not in seen:
+                seen.add(key)
+                deduped.append(a)
+        return dspy.Prediction(answer=deduped)

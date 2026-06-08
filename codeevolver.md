@@ -193,12 +193,12 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: Two-Phase Anchor Expansion + Chain Traversal ReAct (AnchorExpanderModule + PhantomWikiQA)
+## ARCHITECTURE TITLE: Two-Phase Anchor Expansion (scope-restricted) + Chain Traversal ReAct with Answer Deduplication (AnchorExpanderModule + PhantomWikiQA)
 
 ## ARCHITECTURE SUMMARY:
 The system is a two-phase Retrieval-Augmented Generation (RAG) pipeline built on DSPy that answers questions over a PhantomWiki knowledge base. `PhantomWikiReActPipeline` orchestrates `PhantomWikiReAct`, which runs two sequential `dspy.ReAct` agents.
 
-Phase 1 uses `AnchorExpanderModule` (k=15, max_iters=15) to exhaustively find ALL people in the wiki matching the anchor property in the question (occupation, hobby, DOB). Phase 2 uses the full anchor entity list as context and runs the main `PhantomWikiQA` ReAct agent (k=10, max_iters=35) to process EACH anchor entity and collect all answers. This separation ensures the model first resolves the anchor set completely before attempting multi-hop chain traversal.
+Phase 1 uses `AnchorExpanderModule` (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig` to find ALL people in the wiki matching the anchor property (occupation, hobby, DOB). The signature explicitly forbids family/relationship traversal and chain reasoning — it only searches for the property value itself. Phase 2 uses the full anchor entity list as context and runs the main `PhantomWikiQA` ReAct agent (k=10, max_iters=35) to process EACH anchor entity and collect all answers. Final answers are deduplicated (case-insensitive, order-preserving) before returning.
 
 ## ARCHITECTURE DESCRIPTION:
 **Entry Point — `src/program/phantomwiki_pipeline.py`**
@@ -206,11 +206,12 @@ Phase 1 uses `AnchorExpanderModule` (k=15, max_iters=15) to exhaustively find AL
 
 **Core Module — `src/program/phantomwiki_module.py`**
 `PhantomWikiReAct` implements the two-phase strategy:
-- **Phase 1 — `AnchorExpanderModule`**: A dedicated `dspy.ReAct` agent (k=15, max_iters=15) guided by `AnchorExpansionSig`. It detects property lookups in the question ("occupation is X", "hobby is X", "born on X") and runs 4-5+ varied search queries until no new names are found. Returns a comprehensive `anchor_entities` list.
+- **Phase 1 — `AnchorExpanderModule`**: A dedicated `dspy.ReAct` agent (k=15, max_iters=15) guided by the strictly-scoped `AnchorExpansionSig`. The signature enforces that searches target ONLY the property value (e.g., "occupation financial controller"), explicitly prohibiting any family member, sibling, parent, or relationship lookups. Runs 3-5 varied phrasings of the same property lookup to find all matching people.
 - **Phase 2 — Main `react`**: A `dspy.ReAct` agent (k=10, max_iters=35) guided by `PhantomWikiQA`. Receives the pre-built anchor list as `anchor_entities_context` and processes EACH entity to follow the relationship chain. Distinguishes counting vs. naming questions and aggregates all verified answers.
+- **Answer Deduplication**: After Phase 2, `forward()` deduplicates the answer list case-insensitively while preserving original order before returning `dspy.Prediction(answer=deduped)`.
 
 **Data Flow:**
-`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → `AnchorExpanderModule` (Phase 1, up to 15 iters) → anchor entity list → `PhantomWikiQA` react agent (Phase 2, up to 35 iters) → aggregated answer list → `dspy.Prediction(answer=result.answer)`.
+`question` → `PhantomWikiReActPipeline.forward` → `PhantomWikiReAct.forward` → `AnchorExpanderModule` (Phase 1, up to 15 iters, property-only searches) → anchor entity list → `PhantomWikiQA` react agent (Phase 2, up to 35 iters) → aggregated answer list → deduplication → `dspy.Prediction(answer=deduped)`.
 
 **Retriever — `src/program/counting_rm.py`**
 `CountingRM` wraps a `dspy.ColBERTv2` retriever with retry logic, timeout patching, and call counting. Used via `dspy.Retrieve(k=15)` in Phase 1 and `dspy.Retrieve(k=10)` in Phase 2.

@@ -1,10 +1,34 @@
 import contextvars
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import dspy
 
 
 # ── Anchor Expansion ─────────────────────────────────────────────────────────
+
+def _detect_named_person_anchor(question: str) -> str | None:
+    """
+    Detect if a question directly names a specific person as the anchor entity
+    (as opposed to a property-based lookup). Returns the person's name or None.
+
+    Handles AnchorExpander policy-refusal bugs where the model refuses to return
+    a named person when the question also contains relational chains
+    (e.g., "friend of X", "wife of X", "sister-in-law of the friend of X").
+    """
+    q_lower = question.lower()
+    # Skip property-based questions — anchor is a property value, not a named person
+    if re.search(r'\bwhose\s+\w+(?:\s+\w+)?\s+is\b', q_lower):
+        return None
+    if re.search(r'\bborn\s+on\s+\d|\bdate\s+of\s+birth\b|\bwith\s+(?:dob|date\s+of\s+birth)\b', q_lower):
+        return None
+    # Look for proper names: Title-Cased words preceded by "of"
+    # The LAST such occurrence is typically the starting (anchor) entity
+    matches = re.findall(r'\bof\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)(?=[^a-zA-Z]|$)', question)
+    if matches:
+        return matches[-1]
+    return None
+
 
 class AnchorExpansionSig(dspy.Signature):
     """Find ALL people in the wiki that match the anchor property in the question.
@@ -46,6 +70,24 @@ class AnchorExpansionSig(dspy.Signature):
     )
 
 
+class DOBNameExtractor(dspy.Signature):
+    """Extract full names of people born on a specific date from wiki passages.
+
+    Carefully read all passages. Identify every person whose date of birth
+    exactly matches the target date (format: YYYY-MM-DD). Do NOT include
+    people with similar but different dates. Only confirmed exact matches.
+    """
+    passages: str = dspy.InputField(
+        desc="Wiki passages potentially containing birthday/date of birth information for multiple people"
+    )
+    target_date: str = dspy.InputField(
+        desc="The exact birth date to find, in YYYY-MM-DD format (e.g., '0918-01-17')"
+    )
+    names: list[str] = dspy.OutputField(
+        desc="Full names of people whose date of birth exactly matches target_date. Return [] if none found."
+    )
+
+
 class AnchorExpanderModule(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=15)
@@ -54,6 +96,7 @@ class AnchorExpanderModule(dspy.Module):
             tools=[self.search_wiki],
             max_iters=15,
         )
+        self.dob_extractor = dspy.Predict(DOBNameExtractor)
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns up to 15 relevant passages.
@@ -61,11 +104,78 @@ class AnchorExpanderModule(dspy.Module):
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
 
-    def forward(self, question):
+    def _dob_fallback(self, existing_entities: list, full_date: str, year: str) -> list:
+        """
+        Programmatic DOB year-only fallback search.
+        Issues year-only ColBERT queries to find additional people with the given
+        birth date, beyond what the main ReAct found (which uses full-date queries
+        within its 15-iteration budget).
+
+        Called when anchor_entities < 5 AND a DOB pattern is in the question.
+        """
+        existing_lower = {e.strip().lower() for e in existing_entities}
+        combined = list(existing_entities)
+
+        queries = [
+            f"born {year}",
+            f"date of birth {year}",
+            f"birthday {year}",
+        ]
+
+        all_passages = []
+        seen_p: set = set()
+        for query in queries:
+            try:
+                result = self.retrieve(query)
+                for p in result.passages:
+                    if p not in seen_p:
+                        seen_p.add(p)
+                        all_passages.append(p)
+            except Exception:
+                pass
+
+        if not all_passages:
+            return combined
+
         try:
-            return self.react(question=question)
+            extracted = self.dob_extractor(
+                passages="\n\n---\n\n".join(all_passages[:20]),
+                target_date=full_date,
+            )
+            for name in (extracted.names or []):
+                name_clean = name.strip()
+                if name_clean and name_clean.lower() not in existing_lower:
+                    existing_lower.add(name_clean.lower())
+                    combined.append(name_clean)
         except Exception:
-            return dspy.Prediction(anchor_entities=[])
+            pass
+
+        return combined
+
+    def forward(self, question):
+        # Pre-check: if question directly names a person, return them without invoking
+        # the ReAct (avoids policy-refusal bug for chains like "friend of X", "wife of X")
+        named_person = _detect_named_person_anchor(question)
+        if named_person:
+            return dspy.Prediction(anchor_entities=[named_person])
+
+        # Main ReAct: find property-based anchor entities
+        try:
+            result = self.react(question=question)
+            anchor_entities = result.anchor_entities or []
+        except Exception:
+            anchor_entities = []
+
+        # DOB year-only fallback: if few anchors found, issue additional year-only
+        # ColBERT queries beyond the main ReAct's full-date search budget
+        if len(anchor_entities) < 5:
+            dob_match = re.search(r'\b(\d{3,4})-(\d{2})-(\d{2})\b', question)
+            if dob_match:
+                full_date = dob_match.group(0)
+                year = dob_match.group(1)
+                anchor_entities = self._dob_fallback(anchor_entities, full_date, year)
+
+        return dspy.Prediction(anchor_entities=anchor_entities)
 
 
 # ── Per-Entity Processor ──────────────────────────────────────────────────────

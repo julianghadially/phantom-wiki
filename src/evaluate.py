@@ -30,7 +30,7 @@ dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini", cache=False))
 
 selected_pipeline = PhantomWikiReActPipeline
 
-NUM_THREADS = 4
+NUM_THREADS = 8
 
 
 def log_prompts(pipeline):

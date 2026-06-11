@@ -11,3 +11,4 @@ __pycache__/
 .codeevolver.lock
 .codeevolver/
 */__pycache__/*
+Results/

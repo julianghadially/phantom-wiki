@@ -24,6 +24,7 @@ class PhantomWikiReActPipeline(dspy.Module):
         self.program = PhantomWikiReAct()          # main agent (named-entity questions + fallback)
         self.entity_agent = PhantomWikiEntityAgent()  # per-entity agent (filter-condition questions)
         self.discovery_retrieve = dspy.Retrieve(k=10)  # wider k for entity discovery
+        self.date_discovery_retrieve = dspy.Retrieve(k=30)  # higher k for exact-date queries
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -66,10 +67,18 @@ class PhantomWikiReActPipeline(dspy.Module):
 
         return unique[:4]
 
-    def _extract_entity_names(self, passages: list) -> list:
-        """Extract person names from a list of passage strings via regex. Returns sorted deduped list."""
-        names = set()
+    def _extract_entity_names(self, passages: list, date_str: str = None) -> list:
+        """Extract person names from a list of passage strings via regex.
+
+        If date_str is provided (YYYY-MM-DD), entities found in passages containing the
+        exact date string are prioritized (returned first), as those passages are most likely
+        about the anchor entity for date-filter questions.
+        Returns sorted deduped list (date-matched first alphabetically, then rest alphabetically).
+        """
+        date_matched = set()
+        all_names = set()
         for passage in passages:
+            passage_names = set()
             for m in _PROPER_NAME_RE.finditer(passage):
                 name = m.group(1)
                 parts = name.split()
@@ -79,8 +88,16 @@ class PhantomWikiReActPipeline(dspy.Module):
                 # Skip very short parts (single letters like "A Smith")
                 if any(len(p) < 2 for p in parts):
                     continue
-                names.add(name)
-        return sorted(names)
+                passage_names.add(name)
+            # If this passage explicitly contains the exact date string, mark its entities as high-priority
+            if date_str and date_str in passage:
+                date_matched.update(passage_names)
+            all_names.update(passage_names)
+
+        # Date-matched entities first (alphabetical within group), then all others (alphabetical)
+        if date_str and date_matched:
+            return sorted(date_matched) + sorted(all_names - date_matched)
+        return sorted(all_names)
 
     def _postprocess(self, question: str, answers: list, apply_pattern_g: bool = True) -> dspy.Prediction:
         """Deduplicate answers and optionally apply Pattern G for 'how many' questions."""
@@ -123,17 +140,29 @@ class PhantomWikiReActPipeline(dspy.Module):
             # No named entity in the question → use programmatic entity discovery + per-entity agents
 
             # Step 1: run multiple discovery searches
+            # For date-filter questions, use higher k on date-specific queries to improve
+            # the chance of finding the exact anchor entity (ColBERT may rank near-miss dates higher)
             queries = self._generate_discovery_queries(question)
+            date_match_q = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', question)
+            date_str_q = date_match_q.group(1) if date_match_q else None
             all_passages = []
             for q in queries:
                 try:
-                    results = self.discovery_retrieve(q)
+                    # Use the high-k date retriever for date-specific sub-queries
+                    is_date_query = date_str_q and (
+                        q == date_str_q
+                        or q.startswith('born ')
+                        or q.startswith('date of birth ')
+                    )
+                    retriever = self.date_discovery_retrieve if is_date_query else self.discovery_retrieve
+                    results = retriever(q)
                     all_passages.extend(results.passages)
                 except Exception:
                     pass
 
             # Step 2: extract candidate entity names from passages
-            candidates = self._extract_entity_names(all_passages)
+            # For date-filter questions, prioritize entities from passages containing the exact date
+            candidates = self._extract_entity_names(all_passages, date_str=date_str_q)
 
             if not candidates:
                 # No candidates found — fall back to main agent

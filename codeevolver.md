@@ -170,24 +170,23 @@ The pipeline is evaluated using `phantomwiki_f1_feedback`:
 PARENT_MODULE_PATH: src.program.phantomwiki_pipeline.PhantomWikiReActPipeline
 METRIC_MODULE_PATH: src.metric.metric.phantomwiki_f1_feedback
 
-## ARCHITECTURE TITLE: PhantomWiki ReAct QA Pipeline with DSPy ReAct Agent and HTTP Retrieval Tools
+## ARCHITECTURE TITLE: Programmatic Per-Entity Sub-Agent Loop with ColBERT Discovery, PhantomWikiEntityAgent, and Pattern G Post-Processing
 
 ## ARCHITECTURE SUMMARY:
-The pipeline is a DSPy-based question-answering system that uses a ReAct (Reasoning + Acting) agent to answer questions by iteratively querying a PhantomWiki knowledge base over HTTP. The top-level entry point (`PhantomWikiReActPipeline`) delegates to a `ReactAgent`, which wraps DSPy's built-in `dspy.ReAct` module equipped with two retrieval tools. The system is evaluated with a token-level F1 metric that falls back to exact match during optimization tracing.
-
-All pipeline logic lives in `src/program/phantomwiki_pipeline/`: the orchestrator in `PhantomWikiReActPipeline.py`, the agent wrapper in `react_agent.py`, and the HTTP tool functions in `retrieval_tools.py`. The metric is defined in `src/metric/metric.py`.
+The pipeline routes questions into two paths based on whether the question names a specific person. Named-entity questions (e.g., "What is X of Alan Smith?") go directly to the existing single-stage `PhantomWikiReAct` agent (up to 50 iterations, ColBERT retrieval). Filter-condition questions (e.g., "What is X of the person whose Y is Z?") take a new programmatic path: the pipeline first performs up to 4 diverse ColBERT discovery searches, extracts candidate person names from retrieved passages via regex, then runs a focused `PhantomWikiEntityAgent` (15-iteration ReAct) on each candidate (capped at 4). Answers from all per-entity agents are aggregated, deduplicated, and post-processed with Pattern G (converting entity-name lists to counts for "how many" questions). If discovery or per-entity agents yield no results, the system falls back to the main agent.
 
 ## ARCHITECTURE DESCRIPTION:
-**Entry point** (`src/program/phantomwiki_pipeline/PhantomWikiReActPipeline.py`): A thin `dspy.Module` subclass. Its `forward(question: str)` method instantiates and delegates entirely to `ReactAgent`, passing the two retrieval tool functions at construction time.
+**Entry point** (`src/program/phantomwiki_pipeline.py` — `PhantomWikiReActPipeline`): Routes each question through one of two paths. `_has_named_entity()` checks for a proper First-Last name in the question text. Path A (named entity present): delegates to `PhantomWikiReAct` (full 50-iter ReAct, `PhantomWikiSignature`). Path B (filter condition only): runs programmatic discovery, per-entity sub-agents, aggregation, and Pattern G post-processing via `_postprocess()`. Both paths ultimately return a deduplicated `dspy.Prediction(answer=list[str])`.
 
-**ReactAgent** (`src/program/phantomwiki_pipeline/react_agent.py`): Wraps `dspy.ReAct` with a simple `question -> answer` signature and an instructional system prompt describing the assistant role. The agent is allowed up to 10 reasoning/action iterations, enabling multi-hop retrieval over the knowledge base.
+**PhantomWikiReAct** (`src/program/phantomwiki_module.py`): Unchanged from prior iteration. Uses `PhantomWikiSignature` with rich instructions to find ALL matching entities and return every answer. Backed by `dspy.Retrieve(k=7)` via ColBERT.
 
-**Retrieval tools** (`src/program/phantomwiki_pipeline/retrieval_tools.py`): Two plain Python functions exposed as tools to the ReAct agent.
-- `get_article(title: str)`: Issues a GET request to `{PHANTOMWIKI_URL}/article?title=<title>` and returns the full article text.
-- `search_articles(query: str)`: Issues a GET request to `{PHANTOMWIKI_URL}/search?query=<query>` and returns matching article titles and snippets.
-The base URL is read from the `PHANTOMWIKI_URL` environment variable (default: `http://localhost:7000`).
+**PhantomWikiEntityAgent** (`src/program/phantomwiki_module.py`): New lightweight per-entity ReAct agent. Uses `PhantomWikiEntitySignature` which instructs the agent to: (1) search for the given entity, (2) check if the entity satisfies the filter condition, (3) return the answer value(s) or empty list if the entity doesn't match. Limited to 15 iterations to keep cost low per candidate.
 
-**Data flow**: An input `question` string enters `PhantomWikiReActPipeline.forward`, is passed to `ReactAgent.forward`, which drives `dspy.ReAct` through iterative thought–action–observation loops. In each loop iteration the LLM may call `search_articles` to discover relevant articles or `get_article` to fetch full content. After up to 10 iterations a final `answer` string is produced and returned as a `dspy.Prediction`.
+**Entity discovery** (`PhantomWikiReActPipeline._generate_discovery_queries` + `_extract_entity_names`): Generates up to 4 search queries from the question (original question, extracted dates with "born …" variants, "whose X is Y" attribute phrases). Runs all queries through `dspy.Retrieve(k=10)`, then extracts multi-word proper names from passages using `_PROPER_NAME_RE`, filtering out common stop-word false positives via `_SKIP_NAME_PARTS`.
 
-**Metric** (`src/metric/metric.py` — `phantomwiki_f1_feedback`): Compares `example.answer` (gold) against `pred.answer` (predicted) using token-level F1 (set intersection over union of lowercased word tokens). During DSPy optimization tracing (`trace is not None`) it returns binary exact-match instead, guiding the optimizer toward fully correct answers while the continuous F1 signal drives evaluation scoring.
+**Post-processing** (`_postprocess`): Deduplicates the collected answers. For "how many" questions (detected by `_HOW_MANY_RE`), applies Pattern G: if the agent returned entity names instead of a count, replaces the list with its length as a string. Pattern G is disabled for the per-entity path since each entity agent is already instructed to return numeric counts directly.
+
+**Regex constants** (`src/program/phantomwiki_module.py`): `_HOW_MANY_RE`, `_PROPER_NAME_RE`, and `_SKIP_NAME_PARTS` are module-level exports reused by the pipeline for question classification and name extraction.
+
+**Metric** (`src/metric/metric.py` — `phantomwiki_f1_feedback`): Token-level F1 during evaluation; exact-match during DSPy optimization tracing.
 ```

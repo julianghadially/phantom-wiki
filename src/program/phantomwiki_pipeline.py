@@ -34,7 +34,7 @@ class PhantomWikiReActPipeline(dspy.Module):
         return bool(_NAMED_ENTITY_RE.search(question))
 
     def _generate_discovery_queries(self, question: str) -> list:
-        """Generate up to 4 diverse search queries for entity discovery from a filter question."""
+        """Generate up to 5 diverse search queries for entity discovery from a filter question."""
         queries = [question]
 
         # Extract YYYY-MM-DD dates and add date-specific queries
@@ -46,15 +46,21 @@ class PhantomWikiReActPipeline(dspy.Module):
             queries.append(f"date of birth {date}")
 
         # Extract attribute filter phrases like "whose hobby is X" or "whose occupation is Y"
+        # Use lookahead to stop before trailing verbs like "have", "has", "do", "does"
         attr_match = re.search(
-            r'\bwhose\s+(\w+(?:\s+\w+){0,2})\s+is\s+([^?]+?)(?:\?|$)', question, re.I
+            r'\bwhose\s+(\w+(?:\s+(?:of\s+)?\w+){0,2})\s+is\s+(.+?)(?=\s+(?:have|has|do|does|did|can|will|would|should|could)\b|\?|$)',
+            question, re.I
         )
         if attr_match:
             attr = attr_match.group(1).strip()
             value = attr_match.group(2).strip().rstrip('?').strip()
+            # Add "attr value" shorthand query
             candidate = f"{attr} {value}"
             if candidate not in queries:
                 queries.append(candidate)
+            # Also add just the value as a standalone query for better coverage
+            if value not in queries and len(value) > 3:
+                queries.append(value)
 
         # Deduplicate while preserving order
         seen = set()
@@ -64,12 +70,22 @@ class PhantomWikiReActPipeline(dspy.Module):
                 seen.add(q)
                 unique.append(q)
 
-        return unique[:4]
+        return unique[:5]
 
     def _extract_entity_names(self, passages: list) -> list:
-        """Extract person names from a list of passage strings via regex. Returns sorted deduped list."""
-        names = set()
+        """Extract person names from passages in relevance order.
+
+        The first proper name in each passage is typically the article subject
+        (the entity the passage is about). Returns primary names first (one per
+        passage, in passage-relevance order), then secondary names. This ensures
+        the most ColBERT-relevant entities are chosen, not alphabetically-first ones.
+        """
+        seen = set()
+        primary_names = []    # First name from each passage (likely article subject)
+        secondary_names = []  # Other names mentioned in passages
+
         for passage in passages:
+            first_in_passage = True
             for m in _PROPER_NAME_RE.finditer(passage):
                 name = m.group(1)
                 parts = name.split()
@@ -79,8 +95,37 @@ class PhantomWikiReActPipeline(dspy.Module):
                 # Skip very short parts (single letters like "A Smith")
                 if any(len(p) < 2 for p in parts):
                     continue
-                names.add(name)
-        return sorted(names)
+                if name not in seen:
+                    seen.add(name)
+                    if first_in_passage:
+                        primary_names.append(name)
+                        first_in_passage = False
+                    else:
+                        secondary_names.append(name)
+
+        # Primary names (article subjects, most ColBERT-relevant) come first
+        return primary_names + secondary_names
+
+    def _reflexive_shortcut(self, question: str) -> list | None:
+        """Return [Y] if question is 'What is X of the person whose X is Y?' (self-referential).
+
+        These reflexive questions have the answer embedded in the question itself.
+        E.g.: 'What is the date of birth of the person whose date of birth is 0954-03-04?'
+        → the answer is '0954-03-04'.
+        """
+        m = re.match(
+            r'what\s+is\s+(?:the\s+)?(.+?)\s+of\s+the\s+person\s+whose\s+(.+?)\s+is\s+(.+?)\??$',
+            question.strip(), re.I
+        )
+        if not m:
+            return None
+        asked = re.sub(r'^the\s+', '', m.group(1).strip().lower())
+        cond = re.sub(r'^the\s+', '', m.group(2).strip().lower())
+        val = m.group(3).strip().rstrip('?').strip()
+        # Only return the shortcut if asked attribute == filter attribute
+        if asked == cond:
+            return [val]
+        return None
 
     def _postprocess(self, question: str, answers: list, apply_pattern_g: bool = True) -> dspy.Prediction:
         """Deduplicate answers and optionally apply Pattern G for 'how many' questions."""
@@ -113,6 +158,12 @@ class PhantomWikiReActPipeline(dspy.Module):
     def forward(self, question: str) -> dspy.Prediction:
         with dspy.context(lm=self.lm, rm=self.rm):
 
+            # --- Reflexive question shortcut ---
+            # "What is X of person whose X is Y?" → answer is Y, no LLM needed
+            reflexive = self._reflexive_shortcut(question)
+            if reflexive is not None:
+                return dspy.Prediction(answer=reflexive)
+
             # --- Path A: named-entity questions ---
             # The question directly names a person → use the main single-stage agent
             if self._has_named_entity(question):
@@ -140,13 +191,23 @@ class PhantomWikiReActPipeline(dspy.Module):
                 result = self.program(question=question)
                 return self._postprocess(question, result.answer or [], apply_pattern_g=True)
 
-            # Step 3: run per-entity agents (breadth cap = 4 per client guidance)
-            candidates = candidates[:4]
+            # Step 3: run per-entity agents (breadth cap = 6)
+            candidates = candidates[:6]
             all_answers = []
             for entity in candidates:
                 try:
                     entity_result = self.entity_agent(question=question, entity=entity)
-                    all_answers.extend(entity_result.answer or [])
+                    entity_answers = list(entity_result.answer or [])
+                    # Mini-Pattern G: for "how many" questions, convert entity names to count per entity
+                    if entity_answers and _HOW_MANY_RE.search(question):
+                        numeric = [a for a in entity_answers if str(a).lstrip('-').isdigit()]
+                        non_numeric = [a for a in entity_answers if not str(a).lstrip('-').isdigit()]
+                        if non_numeric and not numeric:
+                            # This entity agent returned names instead of count — count them
+                            entity_answers = [str(len(non_numeric))]
+                        elif numeric:
+                            entity_answers = numeric
+                    all_answers.extend(entity_answers)
                 except Exception:
                     pass
 

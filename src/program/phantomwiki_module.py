@@ -63,9 +63,12 @@ class EntityFinderSig(dspy.Signature):
         ENUMERATE ALL BRANCHES: if X has 4 friends, follow ALL 4 paths before finishing.
         SINGULAR FORM ≠ UNIQUE: "the great-grandchild of X" or "the cousin of Y" does NOT mean there is only ONE.
         Always search for ALL entities at each hop — there may be multiple great-grandchildren, multiple cousins, etc.
-        GENDER QUALIFIER: "grandfather" means MALE grandparent; "grandmother" means FEMALE grandparent. "uncle"
-        means MALE sibling of a parent; "aunt" means FEMALE. Include only entities that match the specified gender.
-        Wiki articles identify gender via pronouns ("he/him" = male, "she/her" = female).
+        GENDER QUALIFIER: These terms refer to ONE specific gender:
+        - "grandfather" = male grandparent specifically (NOT grandmother); return only male grandparents.
+        - "grandmother" = female grandparent specifically (NOT grandfather).
+        - "uncle" = male sibling of a parent (NOT aunt); "aunt" = female sibling.
+        - "brother-in-law" = male; "sister-in-law" = female.
+        After traversal, if you find grandparents of both genders, keep only the gender the question specifies.
 
     'attribute': Find ALL entities whose ATTRIBUTE the question asks about.
         e.g., "What is the hobby of the great-uncle of X?" → find the great-uncle entity.

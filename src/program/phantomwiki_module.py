@@ -56,6 +56,11 @@ class EntityFinderSig(dspy.Signature):
 
     'entity': Find ALL entities that ARE the direct answer.
         e.g., "Who is the great-grandson of X?" → find ALL great-grandsons of X.
+        e.g., "Who is the friend of the friend of X?" → ONE HOP AT A TIME: first find ALL friends of X,
+              then for EACH friend F, find ALL of F's friends. Do NOT use compound queries like "friend of friend of X".
+        For chains with 3+ hops: resolve EACH HOP SEPARATELY, enumerate ALL entities at EACH level,
+        then proceed to the next hop. NEVER declare "cannot be determined" — try ALL branches first.
+        ENUMERATE ALL BRANCHES: if X has 4 friends, follow ALL 4 paths before finishing.
 
     'attribute': Find ALL entities whose ATTRIBUTE the question asks about.
         e.g., "What is the hobby of the great-uncle of X?" → find the great-uncle entity.
@@ -296,8 +301,22 @@ class PhantomWikiReAct(dspy.Module):
                     counts.append('0')
             return dspy.Prediction(answer=counts)
 
+        elif question_type == 'entity':
+            # Two-phase for entity questions: Phase 1 focuses solely on entity traversal.
+            # EntityFinderSig has bilateral branch search, kinship depth guidance, and
+            # completeness instructions that prevent premature termination and incomplete
+            # enumeration in deep multi-hop chains (friend/in-law/deep kinship).
+            phase1 = self.entity_finder(question=question, question_type='entity')
+            entities = phase1.target_entities or []
+
+            if not entities:
+                # Fallback to single-phase when Phase 1 found nothing
+                result = self.react(question=question)
+                return dspy.Prediction(answer=result.answer)
+
+            return dspy.Prediction(answer=entities)
+
         else:
-            # Single-phase for entity, attribute, count_answer
-            # These question types work well with the existing single-phase ReAct
+            # Single-phase for attribute, count_answer
             result = self.react(question=question)
             return dspy.Prediction(answer=result.answer)

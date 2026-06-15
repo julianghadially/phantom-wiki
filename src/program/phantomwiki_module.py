@@ -22,6 +22,14 @@ class PhantomWikiQA(dspy.Signature):
     - After finding entities, COUNT them and return that integer as your answer.
     - If the chain in the question resolves to MULTIPLE distinct entities (e.g., multiple great-grandparents, multiple people with the same DOB), count X separately for EACH entity and return ALL distinct count values as separate string answers.
 
+    MULTI-ENTITY ENUMERATION — Do NOT stop at the first qualifying entity:
+    When the question's subject chain contains an indirect anchor (e.g., "the great-grandparent of Z", "the person whose DOB is D", "the person whose hobby is H"), MULTIPLE people may qualify. Stopping after finding the first qualifying entity is the most common mistake. You MUST search for ALL qualifying entities before computing any count:
+    - Ancestor anchors (great-grandparent, grandparent, great-uncle): search BOTH the maternal AND paternal branches of Z — issue separate targeted searches for each grandparent pair (e.g., "grandparents of Z's mother" and "grandparents of Z's father")
+    - Date-of-birth anchor: after finding person #1 with that date, issue at least 2 more searches using different phrasings ("born YYYY", "YYYY-MM birth", year only "YYYY") to find ADDITIONAL people sharing that date
+    - Hobby/occupation anchor: after finding person #1 with that attribute, issue 2+ more searches with varied queries to find MORE people sharing the same hobby/occupation
+    - Friend/sibling anchor: enumerate ALL friends or siblings listed in the entity's passage before proceeding to count
+    Only AFTER exhausting searches for all qualifying entities should you count X for each one and return ALL distinct count values as a list.
+
     IMPLICIT RELATIONSHIPS — NEVER SEARCH DIRECTLY, ALWAYS DERIVE VIA TRAVERSAL:
     Relationships like "cousin," "nephew," "niece," "great-uncle" are NOT stored as keywords in the wiki. You MUST derive them step by step:
     - "cousin of X" → find X's parents → find those parents' siblings → find those siblings' children (= X's cousins)
@@ -61,7 +69,7 @@ class PhantomWikiQA(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=10)
-        self.retrieve_broad = dspy.Retrieve(k=30)
+        self.retrieve_broad = dspy.Retrieve(k=50)
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
             tools=[self.search_wiki, self.search_wiki_broad],
@@ -80,7 +88,7 @@ class PhantomWikiReAct(dspy.Module):
         Use this when you need to find ALL instances matching a criterion — e.g., all people with a given occupation,
         all people sharing a date of birth, or all entities with a specific attribute value.
         Also useful for date-of-birth lookups where multiple people share the same date.
-        Returns up to 30 passages for wider coverage than search_wiki."""
+        Returns up to 50 passages for wider coverage than search_wiki."""
         results = self.retrieve_broad(query)
         return "\n\n".join(results.passages)
 

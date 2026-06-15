@@ -133,12 +133,11 @@ class EntityFinderSig(dspy.Signature):
     - For "great-uncle of X": search BOTH maternal grandparents' siblings AND paternal grandparents' siblings.
     - Only after exhausting BOTH branches should you move forward.
 
-    OCCUPATION / HOBBY ANCHORS — USE EXACT INDEX TOOLS:
+    OCCUPATION / HOBBY ANCHORS — MULTIPLE PEOPLE MAY MATCH:
     - "the person whose occupation is X" does NOT mean there is only one such person.
-    - ALWAYS use search_by_occupation("X") for occupation-anchored questions — this returns ALL person names with that occupation from a pre-built exact index. Much more complete than search_wiki.
-    - ALWAYS use search_by_hobby("X") for hobby-anchored questions — this returns ALL person names with that hobby from a pre-built exact index.
-    - After getting names from the index, use search_wiki to look up each person's article and continue traversal.
-    - If the question chain is just "the person whose hobby/occupation is X" (no further traversal), return ALL names from the index as target_entities.
+    - Issue at least 3 varied search queries (e.g., "occupation X", "works as X", "job X").
+    - Also use search_wiki_broad for broader coverage.
+    - Continue until you are confident you have found ALL matching persons.
 
     DATE-OF-BIRTH ANCHOR:
     - ALWAYS use search_by_date_exact("YYYY-MM-DD") for DOB-anchored questions.
@@ -209,7 +208,7 @@ class PhantomWikiQA(dspy.Signature):
     When the question's subject chain contains an indirect anchor (e.g., "the great-grandparent of Z", "the person whose DOB is D", "the person whose hobby is H"), MULTIPLE people may qualify. Stopping after finding the first qualifying entity is the most common mistake. You MUST search for ALL qualifying entities before computing any count:
     - Ancestor anchors (great-grandparent, grandparent, great-uncle): search BOTH the maternal AND paternal branches of Z — issue separate targeted searches for each grandparent pair (e.g., "grandparents of Z's mother" and "grandparents of Z's father")
     - Date-of-birth anchor: use search_by_date_exact(date_str) — this returns ALL people with that exact DOB from a pre-built exact-match index (no additional searches needed; just read ALL returned articles)
-    - Hobby/occupation anchor: ALWAYS use search_by_hobby("hobby_value") or search_by_occupation("occupation_value") — these return ALL matching person names from a pre-built exact index. Far more complete than search_wiki. Then look up each person's article and extract their attribute.
+    - Hobby/occupation anchor: after finding person #1 with that attribute, issue 2+ more searches with varied queries to find MORE people sharing the same hobby/occupation
     - Friend/sibling anchor: enumerate ALL friends or siblings listed in the entity's passage before proceeding to count
     Only AFTER exhausting searches for all qualifying entities should you count X for each one and return ALL distinct count values as a list.
 
@@ -258,16 +257,14 @@ class PhantomWikiReAct(dspy.Module):
         # Single-phase ReAct (for entity, attribute, count_answer questions)
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
-            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact,
-                   self.search_by_hobby, self.search_by_occupation],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
             max_iters=50,
         )
 
         # Two-phase: Phase 1 finds pivot entities for count_pivot questions
         self.entity_finder = dspy.ReAct(
             signature=EntityFinderSig,
-            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact,
-                   self.search_by_hobby, self.search_by_occupation],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
             max_iters=40,
         )
 
@@ -349,20 +346,75 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         question_type = _classify_question(question)
+        q_lower = question.strip().lower()
 
         if question_type == 'count_pivot':
-            # Two-phase: find all pivot entities, then count X for each one individually
-            phase1 = self.entity_finder(question=question, question_type=question_type)
-            entities = phase1.target_entities or []
+            # Detect hobby/occupation anchor in the question
+            hobby_val = None
+            occ_val = None
+            hm = re.search(r"whose hobby is (.+?)(?:\s+have|\s+does|\s+did|\s*\?|$)", q_lower)
+            om = re.search(r"whose occupation is (.+?)(?:\s+have|\s+does|\s+did|\s*\?|$)", q_lower)
+            if hm:
+                hobby_val = hm.group(1).strip().rstrip('?').strip()
+            if om:
+                occ_val = om.group(1).strip().rstrip('?').strip()
 
-            if not entities:
-                # Fallback to single-phase when Phase 1 found nothing
-                result = self.react(question=question)
-                return dspy.Prediction(answer=result.answer)
+            # Detect if this is a SIMPLE anchor=pivot question:
+            # "How many X does the person whose hobby/occupation is Y have?"
+            # (No chain between "does the" and "person whose")
+            is_simple_anchor = bool(
+                re.search(r"does the person whose (?:hobby|occupation) is", q_lower)
+            )
+
+            if is_simple_anchor and (hobby_val or occ_val):
+                # Bypass Phase 1: use exact index directly for pivot entities
+                if hobby_val:
+                    all_names = _load_hobby_index().get(hobby_val, [])
+                else:
+                    all_names = _load_occupation_index().get(occ_val, [])
+                entities = all_names[:30] if all_names else []
+
+                if not entities:
+                    # Fallback to single-phase
+                    result = self.react(question=question)
+                    return dspy.Prediction(answer=result.answer)
+
+            else:
+                # Complex chain (kinship or chain before attribute anchor):
+                # Inject anchor names as a HINT into Phase 1's question
+                injected_question = question
+                if hobby_val:
+                    anchor_names = _load_hobby_index().get(hobby_val, [])[:25]
+                    if anchor_names:
+                        names_str = ', '.join(anchor_names)
+                        injected_question = (
+                            f"[ANCHOR HINT: The following people have hobby '{hobby_val}': "
+                            f"{names_str}. Use these as STARTING POINTS for traversal — "
+                            f"they are NOT the final answer; traverse the chain to find the actual pivot entities.]\n\n"
+                            + question
+                        )
+                elif occ_val:
+                    anchor_names = _load_occupation_index().get(occ_val, [])[:25]
+                    if anchor_names:
+                        names_str = ', '.join(anchor_names)
+                        injected_question = (
+                            f"[ANCHOR HINT: The following people have occupation '{occ_val}': "
+                            f"{names_str}. Use these as STARTING POINTS for traversal — "
+                            f"they are NOT the final answer; traverse the chain to find the actual pivot entities.]\n\n"
+                            + question
+                        )
+
+                # Two-phase: find all pivot entities
+                phase1 = self.entity_finder(question=injected_question, question_type=question_type)
+                entities = phase1.target_entities or []
+
+                if not entities:
+                    # Fallback to single-phase when Phase 1 found nothing
+                    result = self.react(question=question)
+                    return dspy.Prediction(answer=result.answer)
 
             counts = []
-            # Call count_computer once per pivot entity — guarantees per-entity counting
-            # eliminates the 'enumerate-then-collapse' failure mode
+            # Call count_computer once per pivot entity
             for entity in entities[:30]:  # cap at 30 to improve count distribution coverage
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
@@ -379,6 +431,5 @@ class PhantomWikiReAct(dspy.Module):
 
         else:
             # Single-phase for entity, attribute, count_answer
-            # These question types work well with the existing single-phase ReAct
             result = self.react(question=question)
             return dspy.Prediction(answer=result.answer)

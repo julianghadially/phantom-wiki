@@ -61,6 +61,8 @@ class EntityFinderSig(dspy.Signature):
         For chains with 3+ hops: resolve EACH HOP SEPARATELY, enumerate ALL entities at EACH level,
         then proceed to the next hop. NEVER declare "cannot be determined" — try ALL branches first.
         ENUMERATE ALL BRANCHES: if X has 4 friends, follow ALL 4 paths before finishing.
+        SINGULAR FORM ≠ UNIQUE: "the great-grandchild of X" or "the cousin of Y" does NOT mean there is only ONE.
+        Always search for ALL entities at each hop — there may be multiple great-grandchildren, multiple cousins, etc.
 
     'attribute': Find ALL entities whose ATTRIBUTE the question asks about.
         e.g., "What is the hobby of the great-uncle of X?" → find the great-uncle entity.
@@ -99,6 +101,17 @@ class EntityFinderSig(dspy.Signature):
     - For "cousin of X": search BOTH X's mother's siblings AND X's father's siblings.
     - For "great-uncle of X": search BOTH maternal grandparents' siblings AND paternal grandparents' siblings.
     - Only after exhausting BOTH branches should you move forward.
+
+    GENDER QUALIFIER FILTERING — MANDATORY:
+    If the question uses a gender-specific relationship or modifier, target_entities MUST contain ONLY entities of
+    that gender. Do NOT include entities of the wrong gender. Apply this rule to the FINAL returned entity list.
+    - "grandfather", "uncle", "great-uncle", "second uncle", "grand-nephew", "brother", "brother-in-law",
+      "male cousin", "male [X]" → return ONLY male entities (wiki articles use "he", "him", "his" for males)
+    - "grandmother", "aunt", "great-aunt", "second aunt", "grand-niece", "sister", "sister-in-law",
+      "female cousin", "female [X]" → return ONLY female entities (wiki articles use "she", "her" for females)
+    To verify gender: search the entity's wiki article and check pronouns in the first sentence.
+    IMPORTANT: When you find entities at the correct kinship level, check EACH entity's gender individually
+    via wiki search before including them. Exclude any entity whose gender does not match the qualifier.
 
     OCCUPATION / HOBBY ANCHORS — MULTIPLE PEOPLE MAY MATCH:
     - "the person whose occupation is X" does NOT mean there is only one such person.

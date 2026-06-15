@@ -22,10 +22,20 @@ def _load_date_index():
     return _date_index_cache
 
 
+def _count_of_the(question: str) -> int:
+    """Count occurrences of 'of the' in the question (case-insensitive)."""
+    return len(re.findall(r'\bof the\b', question.lower()))
+
+
+def _has_anchor_pattern(question: str) -> bool:
+    """Check if question uses a 'person whose X is Y' anchor (DOB/hobby/occupation)."""
+    return bool(re.search(r'\bperson whose\b', question.lower()))
+
+
 def _classify_question(question: str) -> str:
     """Deterministically classify question type from surface form.
     Never calls an LLM — based purely on lexical patterns.
-    Returns: 'entity', 'attribute', 'count_answer', or 'count_pivot'.
+    Returns: 'entity', 'attribute', 'attribute_deep', 'count_answer', or 'count_pivot'.
     """
     q = question.strip().lower()
 
@@ -41,6 +51,8 @@ def _classify_question(question: str) -> str:
         return 'count_answer'
 
     elif q.startswith(('what is', 'what are', 'what was', 'what were')):
+        if _count_of_the(question) >= 2 and not _has_anchor_pattern(question):
+            return 'attribute_deep'
         return 'attribute'
 
     else:
@@ -145,6 +157,30 @@ class CountComputerSig(dspy.Signature):
     count: str = dspy.OutputField(desc="Count of X for this entity as a single integer string (e.g., '3')")
 
 
+class AttributeAnswerSig(dspy.Signature):
+    """Phase 2 (attribute questions): Given the original question and a list of target entities
+    found by Phase 1 traversal, look up the specific attribute for EACH entity.
+
+    YOUR ONLY JOB IS TO LOOK UP ATTRIBUTES. Do NOT re-traverse the kinship chain —
+    Phase 1 has already found the correct final entities. Focus solely on attribute lookup.
+
+    TASK: For EACH entity in target_entities:
+    1. Search for the entity's article: search_wiki("[entity name]")
+    2. Extract the attribute asked about in the original question (e.g., occupation, hobby, DOB)
+    3. Record the attribute value — NOT the entity name
+
+    RULES:
+    - Process EVERY entity in target_entities — do not skip any
+    - Return ONLY attribute values (e.g., 'journalist', 'botany') — NOT entity names
+    - If an entity's article has no data for the requested attribute, skip that entity
+    - Do NOT search for more entities or re-traverse the kinship chain
+    - If you need to look up many entities, do them one at a time efficiently
+    """
+    question: str = dspy.InputField(desc="The original question — tells you which attribute to look up")
+    target_entities: list[str] = dspy.InputField(desc="The final target entities found by Phase 1 — look up each one's attribute")
+    answer: list[str] = dspy.OutputField(desc="All attribute values found for the target entities. Return ONLY attribute values, not entity names.")
+
+
 class PhantomWikiQA(dspy.Signature):
     """You are a meticulous researcher answering questions from PhantomWiki, a fictional encyclopedia.
 
@@ -237,6 +273,13 @@ class PhantomWikiReAct(dspy.Module):
             max_iters=15,
         )
 
+        # Two-phase: Phase 2 looks up attribute for target entities found by Phase 1
+        self.attribute_answer = dspy.ReAct(
+            signature=AttributeAnswerSig,
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            max_iters=20,
+        )
+
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus for entities, relationships, and attributes.
         Use for targeted lookups: finding a specific person, their relationships, or their attributes.
@@ -295,6 +338,25 @@ class PhantomWikiReAct(dspy.Module):
                 except Exception:
                     counts.append('0')
             return dspy.Prediction(answer=counts)
+
+        elif question_type == 'attribute_deep':
+            # Two-phase: Phase 1 finds all target entities via chain traversal,
+            # Phase 2 looks up the attribute for each entity separately (no contamination risk).
+            phase1 = self.entity_finder(question=question, question_type='attribute')
+            entities = list(dict.fromkeys(phase1.target_entities or []))
+
+            if not entities:
+                # Fallback to single-phase when Phase 1 found nothing
+                result = self.react(question=question)
+                return dspy.Prediction(answer=result.answer)
+
+            # Phase 2: look up attribute for all entities (capped to prevent runaway)
+            entities_to_process = entities[:20]
+            phase2 = self.attribute_answer(
+                question=question,
+                target_entities=entities_to_process,
+            )
+            return dspy.Prediction(answer=phase2.answer)
 
         else:
             # Single-phase for entity, attribute, count_answer

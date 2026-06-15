@@ -22,6 +22,47 @@ def _load_date_index():
     return _date_index_cache
 
 
+# Kinship terms implying male or female target entities
+_MALE_KINSHIP_TERMS = {
+    'uncle', 'brother', 'grandfather', 'father', 'son', 'nephew',
+    'grand-nephew', 'grandson', 'husband', 'stepbrother', 'stepson',
+    'stepfather', 'great-grandfather', 'great-uncle', 'second uncle',
+    'grand nephew',
+}
+_FEMALE_KINSHIP_TERMS = {
+    'aunt', 'sister', 'grandmother', 'mother', 'daughter', 'niece',
+    'grand-niece', 'granddaughter', 'wife', 'stepsister', 'stepdaughter',
+    'stepmother', 'great-grandmother', 'great-aunt', 'second aunt',
+    'grand niece',
+}
+
+
+def _detect_required_gender(question: str) -> str:
+    """Detect if the question asks specifically for male or female entities.
+    Returns 'male', 'female', or 'unknown'.
+    """
+    q = question.lower().strip()
+
+    # Check only in the first part of the question (before the first " of ")
+    # to avoid matching against the anchor entity's name/description
+    first_part = q.split(' of ')[0]
+    if re.search(r'\bmale\b', first_part):
+        return 'male'
+    if re.search(r'\bfemale\b', first_part):
+        return 'female'
+
+    # Find the answer kinship term after "who is/are the" or "who is/are a"
+    answer_match = re.search(r'\bwho (?:is|are) (?:the |a )?([a-z]+(?:[- ][a-z]+)?)', q)
+    if answer_match:
+        term = answer_match.group(1)
+        if term in _MALE_KINSHIP_TERMS:
+            return 'male'
+        if term in _FEMALE_KINSHIP_TERMS:
+            return 'female'
+
+    return 'unknown'
+
+
 def _classify_question(question: str) -> str:
     """Deterministically classify question type from surface form.
     Never calls an LLM — based purely on lexical patterns.
@@ -271,6 +312,48 @@ class PhantomWikiReAct(dspy.Module):
         header = f"EXACT MATCH: Found {len(passages)} people born on {date_str}:\n\n"
         return header + "\n\n".join(passages)
 
+    def _get_entity_gender(self, entity_name: str) -> str:
+        """Determine gender of an entity by checking pronouns in their wiki article.
+        CRITICAL: Uses ONLY the first (most relevant) retrieved passage to avoid
+        noise from mixed multi-entity passages. Returns 'male', 'female', or 'unknown'.
+        """
+        try:
+            results = self.retrieve(entity_name)
+            if not results.passages:
+                return 'unknown'
+            # Only use the FIRST passage — this should be the entity's own article.
+            # Using all passages introduces noise from related entities' articles.
+            article = results.passages[0].lower()
+            male_count = article.count(' he ') + article.count(' his ') + article.count(' him ')
+            female_count = article.count(' she ') + article.count(' her ') + article.count(' hers ')
+            if male_count > female_count * 1.5:
+                return 'male'
+            elif female_count > male_count * 1.5:
+                return 'female'
+        except Exception:
+            pass
+        return 'unknown'
+
+    def _filter_entities_by_gender(self, entities: list, question: str) -> list:
+        """Filter Phase 1 entity output by gender if the question specifies a gender qualifier.
+        Only applies to entity-type questions when a clear gender qualifier is detected.
+        Falls back to the original unfiltered list if:
+        - No gender qualifier detected in the question
+        - Filtering would produce an empty list (safety net)
+        """
+        required_gender = _detect_required_gender(question)
+        if required_gender == 'unknown':
+            return entities  # No gender filtering needed
+
+        filtered = []
+        for entity in entities:
+            gender = self._get_entity_gender(entity)
+            if gender == required_gender or gender == 'unknown':
+                filtered.append(entity)
+
+        # Safety fallback: never return empty when unfiltered was non-empty
+        return filtered if filtered else entities
+
     def forward(self, question):
         question_type = _classify_question(question)
 
@@ -314,7 +397,12 @@ class PhantomWikiReAct(dspy.Module):
                 result = self.react(question=question)
                 return dspy.Prediction(answer=result.answer)
 
-            return dspy.Prediction(answer=entities)
+            # Apply Python-level gender post-processing:
+            # Phase 1 sometimes returns entities of both genders when the question
+            # specifies a gender qualifier (e.g., "uncle" → only male entities).
+            # Uses first-passage pronoun checking per entity for accurate gender detection.
+            filtered_entities = self._filter_entities_by_gender(entities, question)
+            return dspy.Prediction(answer=filtered_entities)
 
         else:
             # Single-phase for attribute, count_answer

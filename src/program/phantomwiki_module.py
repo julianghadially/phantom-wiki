@@ -24,7 +24,7 @@ class PhantomWikiQA(dspy.Signature):
         desc="A question about fictional PhantomWiki entities, possibly requiring multi-hop reasoning"
     )
     answer: list[str] = dspy.OutputField(
-        desc="A complete list of ALL correct answers found. Most questions have multiple answers. Search exhaustively before finishing."
+        desc="A complete list of ALL correct answers found. Most questions have multiple answers. Search exhaustively before finishing. IMPORTANT: Return ONLY the exact answer values — do NOT include person names, attributions, or extra context alongside the answers. For example, if the question asks for occupations, return ['teacher', 'doctor'] NOT ['John Smith — teacher', 'Jane Doe — doctor']."
     )
 
 

@@ -1,4 +1,24 @@
 import dspy
+import json
+import os
+
+_date_index_cache = None
+
+def _load_date_index():
+    global _date_index_cache
+    if _date_index_cache is None:
+        index_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '../../output/depth_10_size_1000000/date_passages.json'
+            )
+        )
+        if os.path.exists(index_path):
+            with open(index_path, 'r') as f:
+                _date_index_cache = json.load(f)
+        else:
+            _date_index_cache = {}
+    return _date_index_cache
 
 
 class PhantomWikiQA(dspy.Signature):
@@ -25,7 +45,7 @@ class PhantomWikiQA(dspy.Signature):
     MULTI-ENTITY ENUMERATION — Do NOT stop at the first qualifying entity:
     When the question's subject chain contains an indirect anchor (e.g., "the great-grandparent of Z", "the person whose DOB is D", "the person whose hobby is H"), MULTIPLE people may qualify. Stopping after finding the first qualifying entity is the most common mistake. You MUST search for ALL qualifying entities before computing any count:
     - Ancestor anchors (great-grandparent, grandparent, great-uncle): search BOTH the maternal AND paternal branches of Z — issue separate targeted searches for each grandparent pair (e.g., "grandparents of Z's mother" and "grandparents of Z's father")
-    - Date-of-birth anchor: after finding person #1 with that date, issue at least 2 more searches using different phrasings ("born YYYY", "YYYY-MM birth", year only "YYYY") to find ADDITIONAL people sharing that date
+    - Date-of-birth anchor: use search_by_date_exact(date_str) — this returns ALL people with that exact DOB from a pre-built exact-match index (no additional searches needed; just read ALL returned articles)
     - Hobby/occupation anchor: after finding person #1 with that attribute, issue 2+ more searches with varied queries to find MORE people sharing the same hobby/occupation
     - Friend/sibling anchor: enumerate ALL friends or siblings listed in the entity's passage before proceeding to count
     Only AFTER exhausting searches for all qualifying entities should you count X for each one and return ALL distinct count values as a list.
@@ -45,10 +65,11 @@ class PhantomWikiQA(dspy.Signature):
     - "first cousin once removed" = your first cousin's child, OR your parent's first cousin
     - "second cousin" = parent's first cousin's child (grandparent's sibling's grandchild)
 
-    DATE-OF-BIRTH ANCHOR SEARCHES — exact dates like "0946-07-14" rarely match directly. Try:
-    - Use search_wiki_broad with: "born 0946" or "0946 date of birth" for wider coverage
-    - Also try: "0946-07" or "0946 07" (year + month)
-    - IMPORTANT: Multiple people may share the same DOB — after finding one, search again with different queries to find others
+    DATE-OF-BIRTH ANCHOR SEARCHES — use the exact-match index for complete recall:
+    - ALWAYS use search_by_date_exact("YYYY-MM-DD") for questions involving "the person whose date of birth is X"
+    - This tool uses a pre-built exact index and returns EVERY person in the wiki born on that date (sometimes 10-20 people!)
+    - Read ALL returned articles and extract the relevant attribute (occupation, hobby, etc.) for EACH person — they are all valid answers
+    - Tautological case: if the question asks "What is the DOB of the person whose DOB is X?", the answer is X directly — do NOT search, just return X
 
     DO NOT:
     - Stop after finding just one answer
@@ -72,7 +93,7 @@ class PhantomWikiReAct(dspy.Module):
         self.retrieve_broad = dspy.Retrieve(k=50)
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
-            tools=[self.search_wiki, self.search_wiki_broad],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
             max_iters=50,
         )
 
@@ -91,6 +112,19 @@ class PhantomWikiReAct(dspy.Module):
         Returns up to 50 passages for wider coverage than search_wiki."""
         results = self.retrieve_broad(query)
         return "\n\n".join(results.passages)
+
+    def search_by_date_exact(self, date_str: str) -> str:
+        """Search PhantomWiki for ALL entities with exactly this date of birth.
+        Uses a pre-built exact-match index — guaranteed to return EVERY person in the wiki
+        born on this exact date. Far more complete than semantic search (which misses most matches).
+        date_str should be in format YYYY-MM-DD (e.g., '0946-07-14').
+        ALWAYS use this tool for questions involving 'the person whose date of birth is X'."""
+        index = _load_date_index()
+        passages = index.get(date_str, [])
+        if not passages:
+            return f"No entries found in exact index for date: {date_str}. Try search_wiki_broad with 'born {date_str.split('-')[0]}'."
+        header = f"EXACT MATCH: Found {len(passages)} people born on {date_str}:\n\n"
+        return header + "\n\n".join(passages)
 
     def forward(self, question):
         result = self.react(question=question)

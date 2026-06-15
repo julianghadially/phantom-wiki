@@ -26,7 +26,10 @@ def _quiet_del(self):
         pass
 asyncio.BaseEventLoop.__del__ = _quiet_del
 
-dspy.configure(lm=dspy.LM("openai/gpt-5.4-nano", cache=False))
+# reasoning_effort="low" enables reasoning on gpt-5.4-nano (off by default);
+# kept in sync with src/program/phantomwiki_pipeline.py, which is the LM
+# actually used during CodeEvolver optimization.
+dspy.configure(lm=dspy.LM("openai/gpt-5.4-nano", cache=False, reasoning_effort="low"))
 
 selected_pipeline = PhantomWikiReActPipeline
 

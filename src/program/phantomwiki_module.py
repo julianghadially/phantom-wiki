@@ -18,35 +18,70 @@ class PhantomWikiQA(dspy.Signature):
          Step 6: For EACH grandchild, search them → find ALL their children (great-grandchildren of Hilton) → these are the answers
          Step 7: Search each great-grandchild for their occupation
        - CRITICAL: After finding an ancestor, ALWAYS search for ALL their children/siblings — not just the one you traversed from
-    3. For "how many X does the [relation] of [anchor] have?" questions:
-       - The [anchor] may correspond to MULTIPLE [relation]s, each with a DIFFERENT count of X
-       - Find ALL instances of [relation] for [anchor], count their X's separately
-       - Each distinct count is a separate correct answer — collect ALL of them
-       - Example: "how many nephews does the great-uncle of Person P have?" → P may have 5 great-uncles, each with 0, 2, 3, 4, 1 nephews → answers are ['0', '1', '2', '3', '4']
-    4. For attribute-lookup questions ("What is X of the person whose Y is Z"): multiple people may share the same attribute value Y=Z — after finding one match, keep searching for more people with the same attribute.
-    5. After every answer found, ask: "Are there more entities at THIS LEVEL I haven't explored yet?" Enumerate siblings, cousins, and parallel branches.
-    6. If a search fails, try completely different angles: person name alone, relationship type, nearby attribute, partial name.
 
-    NON-STANDARD KINSHIP TERMS — derive these step by step from standard relations:
-    - "second uncle" or "second aunt" = parent's first cousin (your grandparent's sibling's child)
-    - "second cousin" = parent's first cousin's child (your grandparent's sibling's grandchild)
-    - "first cousin once removed" = your first cousin's child, OR your parent's first cousin
-    - "great-uncle" or "great-aunt" = grandparent's sibling
+    FOR "HOW MANY" QUESTIONS — MANDATORY MULTI-ENTITY COUNTING PROCEDURE:
+    "How many X does the [chain] of [anchor] have?" requires this EXACT 3-step process:
+
+    STEP A — Find ALL entities in the chain (spend at least 60% of searches here):
+      The chain "[chain] of [anchor]" resolves to N entities — often 5 to 15, NOT just 1.
+      Example: "great-uncle of Person P" → P has MULTIPLE great-uncles; find ALL of them.
+      Example: "person whose occupation is video editor" → there are MANY; find ALL of them.
+      NEVER stop at the first entity. Search until you have found all qualifying entities.
+
+    STEP B — Count X for EACH entity separately:
+      For EACH of the N entities from Step A, count X independently.
+      Keep a running tally: [entity1: count=2, entity2: count=0, entity3: count=5, ...]
+      Each entity will typically have a DIFFERENT count — do not assume they are the same.
+
+    STEP C — Return ALL distinct count values:
+      Collect all count values from Step B. Return ALL unique values.
+      Example: 5 great-uncles with counts 0, 2, 3, 4, 1 → answers are ['0', '1', '2', '3', '4']
+
+    CRITICAL "HOW MANY" RULES:
+      - NEVER compute just one count and stop — you MUST count for every entity found in Step A.
+      - After computing the count for entity #1, CONTINUE to entity #2, entity #3, and so on.
+      - If a branch is blocked (>4 searches, no progress), SKIP to the next entity — do not get stuck.
+
+    NEVER ABANDON — ALWAYS RETURN PARTIAL RESULTS:
+    - If you have found ANY qualifying entities and computed ANY answers, ALWAYS include them in your final answer.
+    - NEVER return [] or "cannot be determined" if you already computed at least one valid answer.
+    - Partial results earn partial credit; zero results earn zero credit.
+    - If one branch is a dead end, move on immediately — do not abandon the whole question.
+
+    GENERATION LEVEL TRACKING:
+    - Always track WHICH generation level you are at in a multi-hop chain.
+    - Count entities AT the exact target level — not their children (too deep) or parents (too shallow).
+    - Example: "how many great-grandsons does X have?" → count at the great-grandchild level, NOT their children.
+    - After BFS traversal, report ONLY the attribute of the FINAL hop entities. Do NOT report attributes of INTERMEDIATE entities you passed through during traversal.
+
+    For attribute-lookup questions ("What is X of the person whose Y is Z"): multiple people may share the same attribute Y=Z — after finding one match, keep searching for more.
+    After every answer found, ask: "Are there more entities at THIS LEVEL I haven't explored yet?" Enumerate siblings, cousins, and parallel branches.
+    If a search fails, try different angles: person name alone, relationship type, nearby attribute, partial name.
+
+    NON-STANDARD KINSHIP TERMS — derive step by step:
+    - "great-uncle" or "great-aunt" = grandparent's sibling (go up 2 generations, look at siblings)
+    - "second uncle" or "second aunt" = great-grandparent's sibling (go up 3 generations, look at siblings — ONE MORE generation up than great-uncle)
     - "grand-nephew" or "grand-niece" = sibling's grandchild
-    Never search for "second cousin of X" directly — instead derive: find X's grandparents → find their siblings → find those siblings' grandchildren.
+    - "first cousin once removed" = your first cousin's child, OR your parent's first cousin
+    - "second cousin" = parent's first cousin's child (grandparent's sibling's grandchild)
+    DERIVATION RULE: "second [kin]" always goes one additional generation up compared to "great-[kin]".
+    Never search for "second cousin of X" directly — derive: find X's grandparents → find their siblings → find those siblings' grandchildren.
 
-    DATE-OF-BIRTH ANCHOR SEARCHES — exact dates like "0946-07-14" rarely match via semantic search. Try these strategies:
+    DATE-OF-BIRTH ANCHOR SEARCHES — exact dates like "0946-07-14" rarely match via semantic search. Try:
     - Search year only: "born 0946" or "0946 date of birth"
     - Search year + month: "0946 07" or "0946-07"
-    - Search with another attribute: if the question asks about occupation too, include it
-    - After finding candidates, check their page to verify their exact DOB matches
+    - Search with another attribute if available
+    - After finding candidates, verify their exact DOB matches
+    - IMPORTANT: Multiple people may share the same DOB — after finding one, try more searches to find others
 
     DO NOT:
     - Stop after finding just one answer or exploring just one branch of a family tree
     - Assume a question has a unique answer
     - Confuse "the path you arrived at an ancestor via" with "all possible descendants from that ancestor"
     - Give up with "unknown" or "cannot determine" — try at least 5 distinct search strategies before concluding
-    - Return a person's name when the question asks for a count (e.g., if asked "how many great-grandsons does X have?", return the number, not the names)
+    - Return a person's name when the question asks for a count (e.g., return the number, not the names)
+    - Spend more than 4–5 searches on a single dead-end branch — move on to the next qualifying entity
+    - Return attributes of intermediate entities when the question asks for the attribute of the FINAL hop entity
     """
 
     question: str = dspy.InputField(

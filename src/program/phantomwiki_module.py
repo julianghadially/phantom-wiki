@@ -380,32 +380,11 @@ class PhantomWikiReAct(dspy.Module):
                     return dspy.Prediction(answer=result.answer)
 
             else:
-                # Complex chain (kinship or chain before attribute anchor):
-                # Inject anchor names as a HINT into Phase 1's question
-                injected_question = question
-                if hobby_val:
-                    anchor_names = _load_hobby_index().get(hobby_val, [])[:25]
-                    if anchor_names:
-                        names_str = ', '.join(anchor_names)
-                        injected_question = (
-                            f"[ANCHOR HINT: The following people have hobby '{hobby_val}': "
-                            f"{names_str}. Use these as STARTING POINTS for traversal — "
-                            f"they are NOT the final answer; traverse the chain to find the actual pivot entities.]\n\n"
-                            + question
-                        )
-                elif occ_val:
-                    anchor_names = _load_occupation_index().get(occ_val, [])[:25]
-                    if anchor_names:
-                        names_str = ', '.join(anchor_names)
-                        injected_question = (
-                            f"[ANCHOR HINT: The following people have occupation '{occ_val}': "
-                            f"{names_str}. Use these as STARTING POINTS for traversal — "
-                            f"they are NOT the final answer; traverse the chain to find the actual pivot entities.]\n\n"
-                            + question
-                        )
-
-                # Two-phase: find all pivot entities
-                phase1 = self.entity_finder(question=injected_question, question_type=question_type)
+                # Complex chain: let Phase 1 use its own ColBERT-based search strategy.
+                # Hint injection was removed because prepending anchor names caused Phase 1 to
+                # exhaust its iteration budget on wrong traversal paths instead of using
+                # efficient broad search.
+                phase1 = self.entity_finder(question=question, question_type=question_type)
                 entities = phase1.target_entities or []
 
                 if not entities:

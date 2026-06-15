@@ -122,31 +122,6 @@ class EntityFinderSig(dspy.Signature):
     )
 
 
-class AttributeComputerSig(dspy.Signature):
-    """Phase 2 (attribute questions): Look up attributes for explicitly named entities.
-
-    Phase 1 has already identified all target entities. Your job is ONLY to look up their attributes.
-    Do NOT re-traverse the kinship chain — it is already done and your target_entities are the result.
-
-    TASK: For EACH entity in target_entities:
-    1. Search for that entity BY NAME directly (e.g., search_wiki("Werner Corrigan")).
-    2. Extract the attribute type requested in the original question.
-    3. Add the attribute value(s) to your answer list.
-
-    RULES:
-    - Return ONLY attribute values (e.g., 'fishkeeping', 'marine scientist') — NOT entity names.
-    - Combine attribute values from ALL target entities into one list.
-    - Process every entity in target_entities — do not skip any.
-    - If an entity has multiple values for the requested attribute (e.g., multiple hobbies), include all.
-    - Deduplicate: if two entities share the same attribute value, include it only once.
-    """
-    question: str = dspy.InputField(desc="Original question — tells you which attribute type to extract")
-    target_entities: list[str] = dspy.InputField(desc="The entities to look up attributes for")
-    answer: list[str] = dspy.OutputField(
-        desc="All attribute values (not entity names) across all target entities, deduplicated"
-    )
-
-
 class CountComputerSig(dspy.Signature):
     """Phase 2 (count questions): Count how many X the given pivot entity has.
 
@@ -170,26 +145,92 @@ class CountComputerSig(dspy.Signature):
     count: str = dspy.OutputField(desc="Count of X for this entity as a single integer string (e.g., '3')")
 
 
+class PhantomWikiQA(dspy.Signature):
+    """You are a meticulous researcher answering questions from PhantomWiki, a fictional encyclopedia.
+
+    IMPORTANT: Questions frequently have MULTIPLE correct answers (sometimes 10 or more). Your mission is to find ALL of them — not just the first one you encounter.
+
+    HOW TO SEARCH:
+    1. Break down the question into its component parts: identify anchor entities, relationships, and target attributes
+    2. Search for each component separately with targeted queries
+    3. For ancestry/family questions: after tracing one branch, ALWAYS search for siblings and other family branches — every sibling of an ancestor is another potential answer path
+    4. Even when a question uses singular form ("the great-grandparent of X", "the cousin of Y"), there may be MULTIPLE entities at that hop — enumerate ALL of them before moving forward
+    5. For attribute-lookup questions ("What is X of the person whose Y is Z"): multiple people may share the same attribute value — after finding one match, keep searching for others
+    6. After every answer found, ask yourself: "Are there more?" and issue additional searches
+    7. If a search fails, try completely different angles: search by a related name, a different relationship, or a nearby attribute
+
+    HOW MANY QUESTIONS — CRITICAL FORMAT RULE:
+    - "How many X does Y have?" → The answer MUST be a NUMBER (count), NOT a list of entity names.
+    - WRONG: answer=['Alice Smith', 'Bob Jones']   RIGHT: answer=['2']
+    - NEVER return entity names as the answer to a "how many" question — always return the integer count as a string.
+    - After finding entities, COUNT them and return that integer as your answer.
+    - If the chain in the question resolves to MULTIPLE distinct entities (e.g., multiple great-grandparents, multiple people with the same DOB), count X separately for EACH entity and return ALL distinct count values as separate string answers.
+
+    MULTI-ENTITY ENUMERATION — Do NOT stop at the first qualifying entity:
+    When the question's subject chain contains an indirect anchor (e.g., "the great-grandparent of Z", "the person whose DOB is D", "the person whose hobby is H"), MULTIPLE people may qualify. Stopping after finding the first qualifying entity is the most common mistake. You MUST search for ALL qualifying entities before computing any count:
+    - Ancestor anchors (great-grandparent, grandparent, great-uncle): search BOTH the maternal AND paternal branches of Z — issue separate targeted searches for each grandparent pair (e.g., "grandparents of Z's mother" and "grandparents of Z's father")
+    - Date-of-birth anchor: use search_by_date_exact(date_str) — this returns ALL people with that exact DOB from a pre-built exact-match index (no additional searches needed; just read ALL returned articles)
+    - Hobby/occupation anchor: after finding person #1 with that attribute, issue 2+ more searches with varied queries to find MORE people sharing the same hobby/occupation
+    - Friend/sibling anchor: enumerate ALL friends or siblings listed in the entity's passage before proceeding to count
+    Only AFTER exhausting searches for all qualifying entities should you count X for each one and return ALL distinct count values as a list.
+
+    IMPLICIT RELATIONSHIPS — NEVER SEARCH DIRECTLY, ALWAYS DERIVE VIA TRAVERSAL:
+    Relationships like "cousin," "nephew," "niece," "great-uncle" are NOT stored as keywords in the wiki. You MUST derive them step by step:
+    - "cousin of X" → find X's parents → find those parents' siblings → find those siblings' children (= X's cousins)
+    - "nephew of X" → find X's siblings → find siblings' sons
+    - "niece of X" → find X's siblings → find siblings' daughters
+    - "great-uncle of X" → find X's grandparents → find those grandparents' siblings
+    NEVER query "cousin of Alice" or "nephew of Bob" directly — the wiki does not contain those phrases.
+
+    NON-STANDARD KINSHIP TERMS — derive step by step:
+    - "great-uncle" or "great-aunt" = grandparent's sibling (go up 2 generations, find siblings)
+    - "second uncle" or "second aunt" = great-grandparent's sibling (go up 3 generations, find siblings — ONE MORE generation up than great-uncle)
+    - "grand-nephew" or "grand-niece" = sibling's grandchild
+    - "first cousin once removed" = your first cousin's child, OR your parent's first cousin
+    - "second cousin" = parent's first cousin's child (grandparent's sibling's grandchild)
+
+    DATE-OF-BIRTH ANCHOR SEARCHES — use the exact-match index for complete recall:
+    - ALWAYS use search_by_date_exact("YYYY-MM-DD") for questions involving "the person whose date of birth is X"
+    - This tool uses a pre-built exact index and returns EVERY person in the wiki born on that date (sometimes 10-20 people!)
+    - Read ALL returned articles and extract the relevant attribute (occupation, hobby, etc.) for EACH person — they are all valid answers
+    - Tautological case: if the question asks "What is the DOB of the person whose DOB is X?", the answer is X directly — do NOT search, just return X
+
+    DO NOT:
+    - Stop after finding just one answer
+    - Assume a question has a unique answer
+    - Return entity names when the question asks "how many" — always return a numeric count as a string
+    - Query for implicit relationships like "cousin of X" directly — derive them via the step-by-step traversal above
+    - Give up with "unknown" or "cannot determine" after only a few searches — try at least 5 distinct approaches before concluding
+    """
+
+    question: str = dspy.InputField(
+        desc="A question about fictional PhantomWiki entities, possibly requiring multi-hop reasoning"
+    )
+    answer: list[str] = dspy.OutputField(
+        desc="A complete list of ALL correct answers found. Most questions have multiple answers. Search exhaustively before finishing. IMPORTANT: Return ONLY the exact answer values — do NOT include person names, attributions, or extra context alongside the answers. For example, if the question asks for occupations, return ['teacher', 'doctor'] NOT ['John Smith — teacher', 'Jane Doe — doctor']. For 'how many' questions, return the COUNT as a string (e.g., ['3']), NOT the entity names."
+    )
+
+
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=10)
         self.retrieve_broad = dspy.Retrieve(k=50)
 
-        # Phase 1: Find all terminal entities via multi-hop traversal
+        # Single-phase ReAct (for entity, attribute, count_answer questions)
+        self.react = dspy.ReAct(
+            signature=PhantomWikiQA,
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            max_iters=50,
+        )
+
+        # Two-phase: Phase 1 finds pivot entities for count_pivot questions
         self.entity_finder = dspy.ReAct(
             signature=EntityFinderSig,
             tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
             max_iters=40,
         )
 
-        # Phase 2a: Look up attributes for explicitly named entities (bulk, single call)
-        self.attribute_computer = dspy.ReAct(
-            signature=AttributeComputerSig,
-            tools=[self.search_wiki, self.search_wiki_broad],
-            max_iters=35,
-        )
-
-        # Phase 2b: Count X for a single pivot entity
+        # Two-phase: Phase 2 counts X for a single pivot entity
         self.count_computer = dspy.ReAct(
             signature=CountComputerSig,
             tools=[self.search_wiki, self.search_wiki_broad],
@@ -228,46 +269,35 @@ class PhantomWikiReAct(dspy.Module):
     def forward(self, question):
         question_type = _classify_question(question)
 
-        # Phase 1: Find all terminal entities via traversal
-        phase1 = self.entity_finder(question=question, question_type=question_type)
-        entities = phase1.target_entities or []
+        if question_type == 'count_pivot':
+            # Two-phase: find all pivot entities, then count X for each one individually
+            phase1 = self.entity_finder(question=question, question_type=question_type)
+            entities = phase1.target_entities or []
 
-        if question_type == 'entity':
-            return dspy.Prediction(answer=entities)
-
-        elif question_type == 'count_answer':
-            return dspy.Prediction(answer=[str(len(entities))])
-
-        elif question_type == 'attribute':
             if not entities:
-                return dspy.Prediction(answer=[])
-            phase2 = self.attribute_computer(
-                question=question,
-                target_entities=entities
-            )
-            return dspy.Prediction(answer=phase2.answer or [])
+                # Fallback to single-phase when Phase 1 found nothing
+                result = self.react(question=question)
+                return dspy.Prediction(answer=result.answer)
 
-        elif question_type == 'count_pivot':
-            if not entities:
-                return dspy.Prediction(answer=[])
             counts = []
             # Call count_computer once per pivot entity — guarantees per-entity counting
-            # without the 'enumerate-then-collapse' failure mode
+            # eliminates the 'enumerate-then-collapse' failure mode
             for entity in entities[:20]:  # cap at 20 to prevent runaway
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
                     c = phase2.count if phase2.count else '0'
-                    # Normalize: keep only leading digits
                     c_stripped = c.strip()
                     if c_stripped.isdigit():
                         counts.append(c_stripped)
                     else:
-                        import re as _re
-                        m = _re.match(r'^(\d+)', c_stripped)
+                        m = re.match(r'^(\d+)', c_stripped)
                         counts.append(m.group(1) if m else '0')
                 except Exception:
                     counts.append('0')
             return dspy.Prediction(answer=counts)
 
         else:
-            return dspy.Prediction(answer=[])
+            # Single-phase for entity, attribute, count_answer
+            # These question types work well with the existing single-phase ReAct
+            result = self.react(question=question)
+            return dspy.Prediction(answer=result.answer)

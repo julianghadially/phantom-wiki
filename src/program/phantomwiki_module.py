@@ -107,7 +107,7 @@ class PhantomWikiReAct(dspy.Module):
         Returns a confirmation with the total number of entries noted so far."""
         notes = self._get_notes()
         notes.append(f"[{label}]: {content}")
-        return f"Noted ({len(notes)} total entries). Remember to explore ALL entities listed here."
+        return f"Noted ({len(notes)} total entries). Continue exploring the entities that satisfy the question's constraints."
 
     def recall_findings(self) -> str:
         """Read all intermediate findings recorded so far. Call this before finalizing your answer

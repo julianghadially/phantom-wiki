@@ -26,7 +26,7 @@ def _quiet_del(self):
         pass
 asyncio.BaseEventLoop.__del__ = _quiet_del
 
-dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini", cache=False))
+dspy.configure(lm=dspy.LM("openai/gpt-5.4-nano", cache=False))
 
 selected_pipeline = PhantomWikiReActPipeline
 

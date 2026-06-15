@@ -388,7 +388,7 @@ phantom-wiki/
 - Define `PhantomWikiReActPipeline(dspy.Module)`
 - Sets up `CountingRM(dspy.ColBERTv2(url=COLBERT_URL))`
 - Injects RM via `dspy.context(rm=self.rm)` and calls the program
-- Configure DSPy LM (gpt-4.1-mini or similar)
+- Configure DSPy LM (gpt-5.4-nano or similar)
 
 ### Step 5: Create `evaluate.py`
 - Import pipeline, instantiate it

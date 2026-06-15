@@ -404,7 +404,7 @@ import json
 import pandas as pd
 
 # --- Configuration ---
-lm = dspy.LM("openai/gpt-4.1-mini")
+lm = dspy.LM("openai/gpt-5.4-nano")
 dspy.configure(lm=lm)
 
 # --- Load articles for tool use ---

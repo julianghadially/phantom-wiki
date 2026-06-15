@@ -40,7 +40,7 @@ output/depth_10_size_1000000/
 The evaluation pipeline has three layers: **evaluate** → **pipeline** → **module**.
 
 ### 1. Entry point: `src/evaluate.py`
-- Configures the LM globally via `dspy.configure(lm=dspy.LM("openai/gpt-4.1-mini"))`
+- Configures the LM globally via `dspy.configure(lm=dspy.LM("openai/gpt-5.4-nano"))`
 - Loads question JSON from `output/depth_10_size_1000000/` for the requested split (train/val/test)
 - Instantiates a pipeline (currently `PhantomWikiReActPipeline`)
 - Iterates over questions, calls the pipeline, scores each with `phantomwiki_f1`

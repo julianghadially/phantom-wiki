@@ -118,6 +118,15 @@ class EntityFinderSig(dspy.Signature):
     - This returns EVERY person with that exact DOB. Read ALL returned articles.
     - Tautological case: if asked for DOB of person whose DOB is X, return [X] directly.
 
+    SIBLING CROSS-REFERENCE — CRITICAL:
+    - When you read Person A's article and see their siblings listed, those siblings are ALSO children of A's parent.
+    - If you need ALL children/grandchildren of an ancestor, SEARCH THE ANCESTOR DIRECTLY:
+      search_wiki('[ancestor name] children') or search_wiki('[ancestor name] family')
+      to enumerate ALL their children — do NOT rely solely on finding children through the target's lineage.
+    - Example: You find Sylvester Gall is Hilton Gall's child. Sylvester's page lists sisters Bettye Dix and Chloe Hinman.
+      Those sisters are ALSO Hilton's children — search each sister's article for their own children too.
+    - Never assume you've found ALL children of an ancestor just because you found one of them.
+
     COMPLETENESS:
     - After finding entities on one branch, ALWAYS check whether there are more.
     - For each ancestor entity: verify whether they have OTHER children not yet explored.

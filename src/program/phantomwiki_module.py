@@ -134,13 +134,10 @@ class EntityFinderSig(dspy.Signature):
     - Only after exhausting BOTH branches should you move forward.
 
     OCCUPATION / HOBBY ANCHORS — MULTIPLE PEOPLE MAY MATCH:
-    - "the person whose occupation is X" or "whose hobby is Y" does NOT mean there is only one such person.
-    - If anchor_hint is provided (non-empty): treat EACH listed person as a starting point for traversal.
-      For each anchor person, follow the chain in the question to find the actual pivot entities.
-    - Also issue your OWN ColBERT searches (e.g., "occupation X", "works as X", "hobby Y") to find
-      any additional anchor persons not in the hint list.
-    - Use search_wiki_broad for broader coverage.
-    - Continue until you have traversed from ALL matching anchor persons.
+    - "the person whose occupation is X" does NOT mean there is only one such person.
+    - Issue at least 3 varied search queries (e.g., "occupation X", "works as X", "job X").
+    - Also use search_wiki_broad for broader coverage.
+    - Continue until you are confident you have found ALL matching persons.
 
     DATE-OF-BIRTH ANCHOR:
     - ALWAYS use search_by_date_exact("YYYY-MM-DD") for DOB-anchored questions.
@@ -157,18 +154,6 @@ class EntityFinderSig(dspy.Signature):
     question: str = dspy.InputField()
     question_type: str = dspy.InputField(
         desc="One of: entity, attribute, count_answer, count_pivot"
-    )
-    anchor_hint: str = dspy.InputField(
-        desc=(
-            "If non-empty: comma-separated list of persons known to have the ANCHOR ATTRIBUTE "
-            "mentioned in the question (e.g., known farm managers, or persons with a specific hobby). "
-            "CRITICAL: These are STARTING POINTS only — do NOT stop here. You must traverse FURTHER "
-            "through the chain described in the question to reach the actual PIVOT entities. "
-            "Example: if the question asks for great-grandchildren of farm managers, each listed person "
-            "is a farm manager — you must traverse 3 generations DOWN from each to find great-grandchildren. "
-            "Use these names ALONGSIDE your own ColBERT searches (to find any additional anchor persons "
-            "not in this list). If empty, rely entirely on your own search strategy."
-        )
     )
     target_entities: list[str] = dspy.OutputField(
         desc="Complete list of all terminal entities found. Return ONLY person names, never attributes."
@@ -396,22 +381,10 @@ class PhantomWikiReAct(dspy.Module):
 
             else:
                 # Complex chain: pass the ORIGINAL question to Phase 1 without any freetext injection.
-                # Instead, provide anchor persons via the structured anchor_hint field.
-                anchor_hint_str = ""
-                if hobby_val:
-                    anchor_names = _load_hobby_index().get(hobby_val, [])[:10]
-                    if anchor_names:
-                        anchor_hint_str = ", ".join(anchor_names)
-                elif occ_val:
-                    anchor_names = _load_occupation_index().get(occ_val, [])[:10]
-                    if anchor_names:
-                        anchor_hint_str = ", ".join(anchor_names)
-
-                # Two-phase: find all pivot entities using the original question + structured anchor hint
+                # Phase 1 uses its own ColBERT search strategy to find anchor entities and traverse.
                 phase1 = self.entity_finder(
                     question=question,
                     question_type=question_type,
-                    anchor_hint=anchor_hint_str,
                 )
                 entities = phase1.target_entities or []
 

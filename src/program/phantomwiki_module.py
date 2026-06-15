@@ -133,11 +133,13 @@ class EntityFinderSig(dspy.Signature):
     - For "great-uncle of X": search BOTH maternal grandparents' siblings AND paternal grandparents' siblings.
     - Only after exhausting BOTH branches should you move forward.
 
-    OCCUPATION / HOBBY ANCHORS — MULTIPLE PEOPLE MAY MATCH:
-    - "the person whose occupation is X" does NOT mean there is only one such person.
-    - Issue at least 3 varied search queries (e.g., "occupation X", "works as X", "job X").
-    - Also use search_wiki_broad for broader coverage.
-    - Continue until you are confident you have found ALL matching persons.
+    OCCUPATION / HOBBY ANCHORS — USE EXACT TOOLS FOR COMPLETE COVERAGE:
+    - If the question contains "the person whose occupation is X", FIRST call search_by_occupation("X").
+    - If the question contains "the person whose hobby is X", FIRST call search_by_hobby("X").
+    - These tools use a pre-built exact index and return ALL matching persons — far more reliable than ColBERT.
+    - After getting the full list of anchor persons, pick a representative sample (up to 20) and
+      traverse the kinship chain from each to find the pivot entities requested by the question.
+    - Do NOT rely on ColBERT semantic search for hobby/occupation anchor lookup — use the exact tools.
 
     DATE-OF-BIRTH ANCHOR:
     - ALWAYS use search_by_date_exact("YYYY-MM-DD") for DOB-anchored questions.
@@ -264,7 +266,8 @@ class PhantomWikiReAct(dspy.Module):
         # Two-phase: Phase 1 finds pivot entities for count_pivot questions
         self.entity_finder = dspy.ReAct(
             signature=EntityFinderSig,
-            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact,
+                   self.search_by_hobby, self.search_by_occupation],
             max_iters=40,
         )
 

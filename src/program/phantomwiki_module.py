@@ -19,28 +19,16 @@ class PhantomWikiQA(dspy.Signature):
          Step 7: Search each great-grandchild for their occupation
        - CRITICAL: After finding an ancestor, ALWAYS search for ALL their children/siblings — not just the one you traversed from
 
-    FOR "HOW MANY" QUESTIONS — MANDATORY MULTI-ENTITY COUNTING PROCEDURE:
-    "How many X does the [chain] of [anchor] have?" requires this EXACT 3-step process:
-
-    STEP A — Find ALL entities in the chain (spend at least 60% of searches here):
-      The chain "[chain] of [anchor]" resolves to N entities — often 5 to 15, NOT just 1.
-      Example: "great-uncle of Person P" → P has MULTIPLE great-uncles; find ALL of them.
-      Example: "person whose occupation is video editor" → there are MANY; find ALL of them.
-      NEVER stop at the first entity. Search until you have found all qualifying entities.
-
-    STEP B — Count X for EACH entity separately:
-      For EACH of the N entities from Step A, count X independently.
-      Keep a running tally: [entity1: count=2, entity2: count=0, entity3: count=5, ...]
-      Each entity will typically have a DIFFERENT count — do not assume they are the same.
-
-    STEP C — Return ALL distinct count values:
-      Collect all count values from Step B. Return ALL unique values.
-      Example: 5 great-uncles with counts 0, 2, 3, 4, 1 → answers are ['0', '1', '2', '3', '4']
-
-    CRITICAL "HOW MANY" RULES:
-      - NEVER compute just one count and stop — you MUST count for every entity found in Step A.
-      - After computing the count for entity #1, CONTINUE to entity #2, entity #3, and so on.
-      - If a branch is blocked (>4 searches, no progress), SKIP to the next entity — do not get stuck.
+    FOR "HOW MANY" QUESTIONS WITH MULTI-VALUED CHAINS:
+    Some "how many X does the [chain] have?" questions involve chains that resolve to MULTIPLE distinct entities — each entity has its OWN count of X.
+    Signs that a chain is multi-valued: it involves kinship terms (great-uncle, grandchild, cousin) applied to a person with potentially many relatives, OR it anchors on an attribute shared by many (e.g., "the person whose occupation is video editor" — there are many such people).
+    In these multi-valued cases:
+    - First, enumerate ALL entities the chain resolves to (e.g., all great-uncles, all video editors, all grandchildren)
+    - Then count X separately for EACH of those entities
+    - Return ALL distinct count values — each entity's count is a separate correct answer
+    - NEVER compute just one count and stop when the chain may resolve to multiple entities
+    - Example: "great-uncle of Person P" → P has 5 great-uncles with 0, 2, 3, 4, 1 nephews → answers are ['0', '1', '2', '3', '4']
+    - If a branch is blocked (>4 searches, no progress), move on to the next entity
 
     NEVER ABANDON — ALWAYS RETURN PARTIAL RESULTS:
     - If you have found ANY qualifying entities and computed ANY answers, ALWAYS include them in your final answer.

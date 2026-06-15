@@ -22,6 +22,44 @@ def _load_date_index():
     return _date_index_cache
 
 
+_hobby_index_cache = None
+
+def _load_hobby_index():
+    global _hobby_index_cache
+    if _hobby_index_cache is None:
+        index_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '../../output/depth_10_size_1000000/hobby_names.json'
+            )
+        )
+        if os.path.exists(index_path):
+            with open(index_path, 'r') as f:
+                _hobby_index_cache = json.load(f)
+        else:
+            _hobby_index_cache = {}
+    return _hobby_index_cache
+
+
+_occupation_index_cache = None
+
+def _load_occupation_index():
+    global _occupation_index_cache
+    if _occupation_index_cache is None:
+        index_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '../../output/depth_10_size_1000000/occupation_names.json'
+            )
+        )
+        if os.path.exists(index_path):
+            with open(index_path, 'r') as f:
+                _occupation_index_cache = json.load(f)
+        else:
+            _occupation_index_cache = {}
+    return _occupation_index_cache
+
+
 def _classify_question(question: str) -> str:
     """Deterministically classify question type from surface form.
     Never calls an LLM — based purely on lexical patterns.
@@ -95,11 +133,12 @@ class EntityFinderSig(dspy.Signature):
     - For "great-uncle of X": search BOTH maternal grandparents' siblings AND paternal grandparents' siblings.
     - Only after exhausting BOTH branches should you move forward.
 
-    OCCUPATION / HOBBY ANCHORS — MULTIPLE PEOPLE MAY MATCH:
+    OCCUPATION / HOBBY ANCHORS — USE EXACT INDEX TOOLS:
     - "the person whose occupation is X" does NOT mean there is only one such person.
-    - Issue at least 3 varied search queries (e.g., "occupation X", "works as X", "job X").
-    - Also use search_wiki_broad for broader coverage.
-    - Continue until you are confident you have found ALL matching persons.
+    - ALWAYS use search_by_occupation("X") for occupation-anchored questions — this returns ALL person names with that occupation from a pre-built exact index. Much more complete than search_wiki.
+    - ALWAYS use search_by_hobby("X") for hobby-anchored questions — this returns ALL person names with that hobby from a pre-built exact index.
+    - After getting names from the index, use search_wiki to look up each person's article and continue traversal.
+    - If the question chain is just "the person whose hobby/occupation is X" (no further traversal), return ALL names from the index as target_entities.
 
     DATE-OF-BIRTH ANCHOR:
     - ALWAYS use search_by_date_exact("YYYY-MM-DD") for DOB-anchored questions.
@@ -170,7 +209,7 @@ class PhantomWikiQA(dspy.Signature):
     When the question's subject chain contains an indirect anchor (e.g., "the great-grandparent of Z", "the person whose DOB is D", "the person whose hobby is H"), MULTIPLE people may qualify. Stopping after finding the first qualifying entity is the most common mistake. You MUST search for ALL qualifying entities before computing any count:
     - Ancestor anchors (great-grandparent, grandparent, great-uncle): search BOTH the maternal AND paternal branches of Z — issue separate targeted searches for each grandparent pair (e.g., "grandparents of Z's mother" and "grandparents of Z's father")
     - Date-of-birth anchor: use search_by_date_exact(date_str) — this returns ALL people with that exact DOB from a pre-built exact-match index (no additional searches needed; just read ALL returned articles)
-    - Hobby/occupation anchor: after finding person #1 with that attribute, issue 2+ more searches with varied queries to find MORE people sharing the same hobby/occupation
+    - Hobby/occupation anchor: ALWAYS use search_by_hobby("hobby_value") or search_by_occupation("occupation_value") — these return ALL matching person names from a pre-built exact index. Far more complete than search_wiki. Then look up each person's article and extract their attribute.
     - Friend/sibling anchor: enumerate ALL friends or siblings listed in the entity's passage before proceeding to count
     Only AFTER exhausting searches for all qualifying entities should you count X for each one and return ALL distinct count values as a list.
 
@@ -219,14 +258,16 @@ class PhantomWikiReAct(dspy.Module):
         # Single-phase ReAct (for entity, attribute, count_answer questions)
         self.react = dspy.ReAct(
             signature=PhantomWikiQA,
-            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact,
+                   self.search_by_hobby, self.search_by_occupation],
             max_iters=50,
         )
 
         # Two-phase: Phase 1 finds pivot entities for count_pivot questions
         self.entity_finder = dspy.ReAct(
             signature=EntityFinderSig,
-            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact,
+                   self.search_by_hobby, self.search_by_occupation],
             max_iters=40,
         )
 
@@ -252,6 +293,46 @@ class PhantomWikiReAct(dspy.Module):
         Returns up to 50 passages for wider coverage than search_wiki."""
         results = self.retrieve_broad(query)
         return "\n\n".join(results.passages)
+
+    def search_by_hobby(self, hobby_value: str) -> str:
+        """Search PhantomWiki for ALL entities with exactly this hobby.
+        Uses a pre-built exact-match index — guaranteed to return EVERY person in the wiki
+        with this hobby. Far more complete than semantic search.
+        Returns person names (up to 60), one per line.
+        ALWAYS use this tool for questions involving 'the person whose hobby is X'."""
+        index = _load_hobby_index()
+        names = index.get(hobby_value, [])
+        if not names:
+            # Try case-insensitive match
+            for key, val in index.items():
+                if key.lower() == hobby_value.lower():
+                    names = val
+                    break
+        if not names:
+            return f"No entries found in hobby index for: {hobby_value}. Try search_wiki with 'hobby {hobby_value}'."
+        sample = names[:60]
+        header = f"EXACT MATCH: Found {len(names)} people with hobby '{hobby_value}'. Listing first {len(sample)}:\n"
+        return header + "\n".join(sample)
+
+    def search_by_occupation(self, occupation_value: str) -> str:
+        """Search PhantomWiki for ALL entities with exactly this occupation.
+        Uses a pre-built exact-match index — guaranteed to return EVERY person in the wiki
+        with this occupation. Far more complete than semantic search.
+        Returns person names (up to 60), one per line.
+        ALWAYS use this tool for questions involving 'the person whose occupation is X'."""
+        index = _load_occupation_index()
+        names = index.get(occupation_value, [])
+        if not names:
+            # Try case-insensitive match
+            for key, val in index.items():
+                if key.lower() == occupation_value.lower():
+                    names = val
+                    break
+        if not names:
+            return f"No entries found in occupation index for: {occupation_value}. Try search_wiki with 'occupation {occupation_value}'."
+        sample = names[:60]
+        header = f"EXACT MATCH: Found {len(names)} people with occupation '{occupation_value}'. Listing first {len(sample)}:\n"
+        return header + "\n".join(sample)
 
     def search_by_date_exact(self, date_str: str) -> str:
         """Search PhantomWiki for ALL entities with exactly this date of birth.
@@ -282,7 +363,7 @@ class PhantomWikiReAct(dspy.Module):
             counts = []
             # Call count_computer once per pivot entity — guarantees per-entity counting
             # eliminates the 'enumerate-then-collapse' failure mode
-            for entity in entities[:20]:  # cap at 20 to prevent runaway
+            for entity in entities[:30]:  # cap at 30 to improve count distribution coverage
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
                     c = phase2.count if phase2.count else '0'

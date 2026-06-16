@@ -264,6 +264,15 @@ class PhantomWikiReAct(dspy.Module):
             max_iters=40,
         )
 
+        # Separate Phase 1 for entity questions — higher budget (60 iters) to handle
+        # deep multi-hop chains and DOB multi-anchor questions (7+ anchors × 3 hops
+        # can easily require 40+ tool calls, exhausting the count_pivot budget of 40).
+        self.entity_finder_entity = dspy.ReAct(
+            signature=EntityFinderSig,
+            tools=[self.search_wiki, self.search_wiki_broad, self.search_by_date_exact],
+            max_iters=60,
+        )
+
         # Two-phase: Phase 2 counts X for a single pivot entity
         self.count_computer = dspy.ReAct(
             signature=CountComputerSig,
@@ -316,7 +325,7 @@ class PhantomWikiReAct(dspy.Module):
             counts = []
             # Call count_computer once per pivot entity — guarantees per-entity counting
             # eliminates the 'enumerate-then-collapse' failure mode
-            for entity in entities[:20]:  # cap at 20 to prevent runaway
+            for entity in entities[:30]:  # cap at 30 to prevent runaway; higher cap finds more real pivots
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
                     c = phase2.count if phase2.count else '0'
@@ -332,10 +341,10 @@ class PhantomWikiReAct(dspy.Module):
 
         elif question_type == 'entity':
             # Two-phase for entity questions: Phase 1 focuses solely on entity traversal.
-            # EntityFinderSig has bilateral branch search, kinship depth guidance, and
-            # completeness instructions that prevent premature termination and incomplete
-            # enumeration in deep multi-hop chains (friend/in-law/deep kinship).
-            phase1 = self.entity_finder(question=question, question_type='entity')
+            # Uses entity_finder_entity (max_iters=60) instead of entity_finder (max_iters=40)
+            # to handle DOB multi-anchor questions (7+ anchors × 3 hops = 40+ tool calls)
+            # and deep friend/in-law chains that exhaust the lower budget.
+            phase1 = self.entity_finder_entity(question=question, question_type='entity')
             entities = phase1.target_entities or []
 
             if not entities:

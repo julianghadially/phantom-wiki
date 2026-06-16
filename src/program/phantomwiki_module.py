@@ -313,10 +313,23 @@ class PhantomWikiReAct(dspy.Module):
                 result = self.react(question=question)
                 return dspy.Prediction(answer=result.answer)
 
+            # Deduplicate while preserving order (Phase 1 may return same entity multiple times
+            # when it appears in results from multiple search queries)
+            seen = set()
+            unique_entities = []
+            for e in entities:
+                if e not in seen:
+                    seen.add(e)
+                    unique_entities.append(e)
+            entities = unique_entities
+
             counts = []
             # Call count_computer once per pivot entity — guarantees per-entity counting
-            # eliminates the 'enumerate-then-collapse' failure mode
-            for entity in entities[:20]:  # cap at 20 to prevent runaway
+            # eliminates the 'enumerate-then-collapse' failure mode.
+            # Cap at 50 (up from 20) to handle large hobby/occupation pivot sets where
+            # Phase 1 finds 50-130 entities; cap=20 processes only 15-26% of those,
+            # systematically missing gold count values like '5','6','7','8'.
+            for entity in entities[:50]:  # cap at 50 to cover large hobby/occupation pivot sets
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
                     c = phase2.count if phase2.count else '0'

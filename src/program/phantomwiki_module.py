@@ -13,7 +13,7 @@ class PhantomWikiSignature(dspy.Signature):
     Example: "occupation of the grandchild of person X"
     → (a) find person X, (b) find ALL grandchildren of X (search each of their parents), (c) return ALL their occupations.
 
-    DIRECTION RULE: Ancestor lookups (great-grandfather, grandparent, parent OF X) require going UP the family tree from X. Descendant lookups (great-grandchild, grandchild, child OF X) require going DOWN. Never confuse these directions before searching.
+    DIRECTION RULE: Ancestor lookups (great-grandfather, grandparent, parent OF X) require going UP the family tree from X. Descendant lookups (great-grandchild, grandchild, child OF X) require going DOWN. Never confuse these directions.
 
     ## Step 2: When multiple entities match, enumerate each — NEVER sum or aggregate
 
@@ -40,41 +40,18 @@ class PhantomWikiSignature(dspy.Signature):
 
     NEVER search "cousin of X" or "sister-in-law of X" — those fields don't exist. Always decompose.
 
-    ## Step 4: Discover ALL matching entities using multiple searches
-
-    When finding all entities that share a property (same hobby, occupation, or date of birth):
-    - Make AT LEAST 2–3 searches with different phrasings before moving to the next chain step
-    - Example for "hobby is microbiology": search "hobby microbiology", then "microbiology hobbyist", then "microbiology" — each may return different people
-    - A single search may miss many matches — PhantomWiki has many people per property
-    - Only proceed to chain traversal after making multiple independent discovery searches
-
-    ## Step 5: For each entity found, check ALL its connections — never stop partway
-
-    Once you find an intermediate entity (e.g., a grandparent, sibling, or cousin):
-    - Explicitly find ALL their relevant connections (all children, all siblings, all parents) as needed by the question
-    - Do NOT stop after finding 1–2 connections when more likely exist
-    - If a person has 3 children listed, you must look up all 3 before finalizing
-    - Before finalizing answers, explicitly ask yourself: "Have I explored ALL branches of every intermediate entity? Are there siblings, children, or parents I haven't checked yet?"
-
-    ## Step 6: Anti-loop guard — move on after 2 failed searches
-
-    If a search returns no useful new information about a specific entity or sub-path:
-    - Try at most 2 different phrasings for that same entity or relationship
-    - After 2 failures on the same sub-path, mark it as "data unavailable" and continue to remaining unexplored branches
-    - Never repeat the same search query — always rephrase or move on
-
-    ## Step 7: Search from multiple angles and persist
+    ## Step 4: Search exhaustively and persist when stuck
 
     - Search each person by name to find their family, occupation, and hobbies
-    - Search "children of [name]", "siblings of [name]", "parents of [name]" for direct relationships
-    - Search by occupation or hobby to find all people with that attribute (multiple searches may be needed)
-    - For dates of birth (e.g., 0945-06-12): try multiple forms — "0945-06-12", "born 0945-06-12", "date of birth 0945-06-12"
-    - For derived relationships (cousin, in-law, uncle): search the CONSTITUENT parts, not the derived relationship name
-    - Try alternate phrasings if your first query returns no results
+    - For dates of birth (e.g., 0945-06-12): try multiple forms — "0945-06-12", "born 0945", "date of birth 0945-06-12"
+    - When finding all entities with a shared property (hobby X, occupation Y, or date Z): use 2–3 different search phrasings since a single query may miss many matches
+    - When you find an intermediate entity, check ALL of its relevant connections before finalizing (e.g., if a grandparent has 4 children, look up all 4; if a person has 3 siblings, check all 3)
+    - If a search returns no new information after 2 attempts on the same sub-path, move on to other unexplored branches rather than repeating the same query
+    - If a person's family page returns no siblings or children, try searching their parents to triangulate
     - After finding some answers, ask: "Are there more branches I haven't explored yet?" Keep going until all branches are covered
     - Do NOT stop after finding one answer — only finalize when all relationship-chain branches are exhausted
 
-    ## Step 8: Match the answer type to the question
+    ## Step 5: Match the answer type to the question
 
     - "Who is...?" → return the person's name(s)
     - "What is the occupation/hobby/date of...?" → return the attribute value(s), not names
@@ -102,11 +79,10 @@ class PhantomWikiReAct(dspy.Module):
         Effective strategies:
         - Search a person's name to find their family, occupation, and hobbies
         - Search "children of [name]", "siblings of [name]", "parents of [name]" for direct relationships
-        - Search by occupation or hobby to find all people with that attribute (use 2-3 different phrasings to find everyone)
+        - Search by occupation or hobby to find all people with that attribute (multiple searches may be needed to find everyone)
         - For dates of birth, try multiple forms: "0945-06-12", "born 0945-06-12", "date of birth 0945-06-12"
         - For derived relationships (cousin, in-law, uncle): search the CONSTITUENT parts, not the derived relationship name
         - Try alternate phrasings if your first query returns no results
-        - After 2 failed searches for the same entity, move on to other branches
         """
         results = self.retrieve(query)
         return "\n\n".join(results.passages)

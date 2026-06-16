@@ -12,6 +12,31 @@ _PROPERTY_ANCHOR = _re.compile(
     _re.IGNORECASE
 )
 
+# Detects tautological DOB questions — "What is the DOB of the person whose DOB is YYYY-MM-DD?"
+# Returns the date directly with 0 LM calls — deterministically correct.
+_TAUTOLOGICAL_DOB = _re.compile(
+    r'what\s+is\s+the\s+date\s+of\s+birth\s+of\s+the\s+person\s+whose\s+date\s+of\s+birth\s+is\s+(\d{4}-\d{2}-\d{2})',
+    _re.IGNORECASE
+)
+
+# Exact-match uncertainty tokens for loop-path answer filtering.
+# Applied ONLY in the multi-entity loop path — NOT on the main ReAct path.
+# These are short, unambiguous tokens that sub-ReActs return when chains fail.
+# NOTE: no prefix-match — prefix-match was confirmed harmful in iterations 17/18.
+_UNCERTAINTY_EXACT = frozenset({
+    'unknown',
+    'indeterminable',
+    'n/a',
+    'not found',
+    'cannot_determine_from_available_wiki_pages',
+    'none',
+    'null',
+    'unable to determine',
+    'cannot be determined',
+    'cannot determine',
+    'not determinable',
+})
+
 
 class PhantomWikiSignature(dspy.Signature):
     """You are a research agent for the PhantomWiki knowledge base — a fictional universe with records of people, family relationships, occupations, hobbies, dates of birth, and friendships.
@@ -113,14 +138,19 @@ class PhantomWikiReAct(dspy.Module):
                 if p not in seen:
                     seen.add(p)
                     passages.append(p)
-        return passages[:30]
+        return passages[:60]  # Increased pool to support entity cap 20
 
-    def _extract_entity_names_from_passages(self, passages: list, prop_value: str) -> list:
+    def _extract_entity_names_from_passages(self, passages: list, prop_value: str, prop_type: str = '') -> list:
         """Extract person names from ColBERT passages.
 
         Passage format: "Name Surname: # Name Surname  ## Family ..."
         Entity name is everything before the first colon.
-        Only include passages that actually contain the property value.
+
+        Strict entity validation: only include entities whose passage contains the exact phrase
+        "The [prop_type] of [Name] is [prop_value]" — this eliminates false positives from
+        entities that only mention the property value in unrelated contexts (e.g., friend mentions).
+        PhantomWiki stores attributes as "The hobby of X is Y." / "The occupation of X is Y."
+        in the ## Attributes section, so this phrase check is semantically exact.
         """
         names: list = []
         seen: set = set()
@@ -132,12 +162,19 @@ class PhantomWikiReAct(dspy.Module):
                 continue
             name = passage[:colon_idx].strip()
             parts = name.split()
-            if (len(parts) >= 2 and
+            if not (len(parts) >= 2 and
                     all(p[0].isupper() for p in parts if p) and
                     name not in seen):
-                names.append(name)
-                seen.add(name)
-        return names[:12]  # Cap at 12 entities to control compute
+                continue
+            # Strict entity validation: verify the passage explicitly states this entity
+            # has the queried property (not just mentions it in some other context).
+            if prop_type:
+                validation_phrase = f"the {prop_type} of {name.lower()} is {prop_value.lower()}"
+                if validation_phrase not in passage.lower():
+                    continue
+            names.append(name)
+            seen.add(name)
+        return names[:20]  # Cap at 20 entities with strict validation eliminating false positives
 
     def _make_entity_question(self, question: str, prop_type: str, prop_value: str, entity_name: str) -> str:
         """Replace 'the person whose PROP is VALUE' with entity_name in the question."""
@@ -187,6 +224,12 @@ class PhantomWikiReAct(dspy.Module):
         return "\n\n".join(self.retrieve(query).passages)
 
     def forward(self, question):
+        # Tautological DOB short-circuit: "What is the DOB of the person whose DOB is YYYY-MM-DD?"
+        # Returns the date directly with 0 LM calls — deterministically correct.
+        dob_tautology = _TAUTOLOGICAL_DOB.search(question)
+        if dob_tautology:
+            return dspy.Prediction(answer=[dob_tautology.group(1)])
+
         # Detect property anchor (e.g., "the person whose hobby is die-cast toy")
         anchor = self._extract_anchor_property(question)
 
@@ -194,8 +237,8 @@ class PhantomWikiReAct(dspy.Module):
             prop_type, prop_value = anchor
             # Pre-retrieve all passages matching the anchor property
             passages = self._pre_retrieve_anchor(prop_type, prop_value)
-            # Extract entity names from the passage headers
-            entities = self._extract_entity_names_from_passages(passages, prop_value)
+            # Extract entity names with strict validation (prop_type passed for phrase check)
+            entities = self._extract_entity_names_from_passages(passages, prop_value, prop_type)
 
             if len(entities) >= 2:
                 # Multi-entity mode: run a focused sub-question for each entity and union results
@@ -207,7 +250,10 @@ class PhantomWikiReAct(dspy.Module):
                         if sub_result.answer:
                             for ans in sub_result.answer:
                                 if ans and ans.strip():
-                                    all_answers.append(ans.strip())
+                                    # Filter uncertainty tokens (loop path only, NOT main ReAct)
+                                    # Exact-match only — no prefix-match (confirmed harmful in iters 17/18)
+                                    if ans.strip().lower() not in _UNCERTAINTY_EXACT:
+                                        all_answers.append(ans.strip())
                     except Exception:
                         pass  # Skip failed sub-questions gracefully
 

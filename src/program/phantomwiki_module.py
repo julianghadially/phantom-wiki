@@ -62,6 +62,17 @@ class EntityFinderSig(dspy.Signature):
         then proceed to the next hop. NEVER declare "cannot be determined" — try ALL branches first.
         ENUMERATE ALL BRANCHES: if X has 4 friends, follow ALL 4 paths before finishing.
 
+        DOB/ATTRIBUTE MULTI-ANCHOR EXPANSION (CRITICAL): When search_by_date_exact returns N persons,
+        or when N persons share an occupation/hobby, you MUST traverse the kinship chain from EACH of
+        the N persons — not just the first one. Example: 7 persons born on a date, question asks
+        "father-in-law of friend of DOB person" → find friends of ALL 7, then father-in-law of each
+        found friend. Do NOT stop after the first successful chain. Budget 2-3 tool calls per anchor.
+
+        RECIPROCAL COUSINHOOD: If X has multiple grandchildren [G1, G2, G3], these grandchildren are
+        cousins OF EACH OTHER. For "cousin of grandchild of X": include ALL of X's grandchildren in
+        target_entities — they are mutual first cousins. Then search EACH grandchild's parent's siblings
+        for additional external cousins too.
+
     'attribute': Find ALL entities whose ATTRIBUTE the question asks about.
         e.g., "What is the hobby of the great-uncle of X?" → find the great-uncle entity.
         e.g., "What is the occupation of the grandchild of the great-grandfather of Y?" → find ALL such great-grandchildren.
@@ -76,6 +87,16 @@ class EntityFinderSig(dspy.Signature):
         e.g., "How many X does the great-grandchild of the person whose occupation is V have?" →
               find ALL great-grandchildren of ALL persons with occupation V.
         Do NOT find or count X — that is done in Phase 2 using your output.
+
+        HOP-BY-HOP TRAVERSAL (MANDATORY for multi-hop occupation/hobby anchor):
+        - NEVER search compound phrases like "great-grandchild of video editor" — those exact phrases
+          are NOT in the wiki. The wiki stores relationships article-by-article, not as compound facts.
+        - CORRECT approach for "great-grandchild of video editor":
+          Step 1: find ALL video editors via search_wiki_broad("occupation video editor").
+          Step 2: for EACH video editor found, search for their children individually.
+          Step 3: for EACH child found, search for THEIR children (grandchildren).
+          Step 4: for EACH grandchild, search for THEIR children (great-grandchildren = pivots).
+          One hop at a time — never combine multiple generations into one search query.
 
     KINSHIP DEPTH — CRITICAL:
     - "grandparent of X" = X's parents' PARENTS (go UP TWO generations from X, not one).
@@ -144,6 +165,14 @@ class CountComputerSig(dspy.Signature):
     - For implicit relationships (cousin, nephew, great-uncle): derive via step-by-step traversal.
     - If you find 0 instances of X, return '0'.
     - Return only a single integer string (e.g., '3', '0', '12') — NOT entity names, NOT ranges.
+
+    FINDING ANCESTORS OF THE PIVOT (when the question asks about a RELATIVE'S X):
+    - e.g., "How many female first cousins once removed does the GRANDFATHER of [pivot] have?"
+      → You need the grandfather first. Search for pivot_entity's OWN article by name — their
+        father/mother names appear IN THEIR OWN ARTICLE, not in "father of [name]" search results.
+      → Search pivot_entity → find father name → search father's article → find grandfather name
+        → search grandfather's article → count their female first cousins once removed.
+    - NEVER search "grandfather of [pivot_name]" as a compound phrase — use hop-by-hop article lookups.
     """
     question: str = dspy.InputField(desc="Original question — tells you what X to count")
     pivot_entity: str = dspy.InputField(desc="The specific entity to count X for")

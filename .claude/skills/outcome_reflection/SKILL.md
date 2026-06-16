@@ -3,8 +3,9 @@ name: outcome_reflection
 description: >
   Mid-session reflection on whether the iteration's change produced the
   expected improvement. Invoke this skill before exiting the iteration.
-  Produces a written analysis and saves it to
-  /memory/iteration_history_{iteration_idx}.md.
+  Produces a written analysis and saves it as
+  iteration_history_{iteration_idx}.md in the architect memory directory
+  named in your system prompt.
 ---
 
 # Outcome reflection
@@ -36,14 +37,11 @@ Produce a short (200–600 word) analysis covering:
 
 ## Where to write it
 
-Use the `Write` tool to save your analysis to:
+Use the `Write` tool to save your analysis to `iteration_history_{iteration_idx}.md` in the appropriate directory (see your system prompt for the path - e.g., memory/iteration_history_{iteration_idx}.md)
 
-```
-/memory/iteration_history_{iteration_idx}.md
-```
 
 Use the current iteration index you were given at the start of the session.
-Do not create files at any other path. Do not edit `/memory/memory.md` — the
+Do not create files at any other path. Do not edit `/memory.md` — the
 valset reflection agent owns that file.
 
 ## Constraints

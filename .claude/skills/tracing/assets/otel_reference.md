@@ -115,8 +115,8 @@ The `parent` / `child` suffix convention:
 
 - `"parent"` — evaluation of the current candidate before changes
 - `"child"` — evaluation after the architect's proposed changes
-- `"seed"`  — initial seed full-valset eval
-- `"final"` — finalization full-valset eval
+- `"valset"` — seed valset-subsample eval (iteration 0)
+- `"test"`  — finalization held-out test-set eval (seed + best candidate)
 
 CodeEvolver also writes a compact per-row index file alongside each trace file (`/traces/iteration_{N}_{suffix}_index.jsonl`) that the architect embeds inline in its prompts. That's an engine-side artifact — clients don't generate it and don't need to know its shape. See `specs/engine2.md` if you're curious.
 
@@ -206,6 +206,20 @@ drops the structural plumbing wrappers (`ChainOfThought.forward`,
 because they carry duplicated inputs/outputs of the leaf `LM.__call__`.
 LM calls, TOOL/RETRIEVER spans, and the user's own `dspy.Module.forward`
 spans are retained.
+
+**Re-parenting across dropped wrappers.** Dropping a span would otherwise
+orphan its kept children, because OTel records only each span's *direct*
+parent id. To avoid that, the filter records every dropped span's
+`(id -> parent_id)` link into a per-row ancestry skip-map
+(`telemetry.collect_row_spans` yields `(spans, drop_links)`), and
+`converter.spans_to_trace_entries(..., drop_links=...)` walks that map to
+re-parent each kept span to its *nearest surviving ancestor*. So a kept
+`LM.__call__` whose `ChatAdapter`/`Predict` wrappers were dropped nests under
+the surviving `JudgeModule.forward` rather than appearing as a detached root.
+The skip-map holds ids only — the dropped spans' (duplicated) payloads are
+still discarded. The parent-input dedupe pass runs against this resolved
+ancestor too. The walk is cycle/depth-safe (malformed chains degrade to a
+detached root).
 
 ## Span filters
 

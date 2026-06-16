@@ -13,6 +13,8 @@ class PhantomWikiSignature(dspy.Signature):
     Example: "occupation of the grandchild of person X"
     → (a) find person X, (b) find ALL grandchildren of X (search each of their parents), (c) return ALL their occupations.
 
+    DIRECTION RULE: Ancestor lookups (great-grandfather, grandparent, parent OF X) require going UP the family tree from X. Descendant lookups (great-grandchild, grandchild, child OF X) require going DOWN. Never confuse these directions before searching.
+
     ## Step 2: When multiple entities match, enumerate each — NEVER sum or aggregate
 
     When a question's subject resolves to MULTIPLE people (e.g., "all people with hobby X", "all people born on date Y"), the answer is the SET of distinct individual values — one value per person — NOT a total sum.
@@ -38,15 +40,41 @@ class PhantomWikiSignature(dspy.Signature):
 
     NEVER search "cousin of X" or "sister-in-law of X" — those fields don't exist. Always decompose.
 
-    ## Step 4: Search exhaustively and persist when stuck
+    ## Step 4: Discover ALL matching entities using multiple searches
+
+    When finding all entities that share a property (same hobby, occupation, or date of birth):
+    - Make AT LEAST 2–3 searches with different phrasings before moving to the next chain step
+    - Example for "hobby is microbiology": search "hobby microbiology", then "microbiology hobbyist", then "microbiology" — each may return different people
+    - A single search may miss many matches — PhantomWiki has many people per property
+    - Only proceed to chain traversal after making multiple independent discovery searches
+
+    ## Step 5: For each entity found, check ALL its connections — never stop partway
+
+    Once you find an intermediate entity (e.g., a grandparent, sibling, or cousin):
+    - Explicitly find ALL their relevant connections (all children, all siblings, all parents) as needed by the question
+    - Do NOT stop after finding 1–2 connections when more likely exist
+    - If a person has 3 children listed, you must look up all 3 before finalizing
+    - Before finalizing answers, explicitly ask yourself: "Have I explored ALL branches of every intermediate entity? Are there siblings, children, or parents I haven't checked yet?"
+
+    ## Step 6: Anti-loop guard — move on after 2 failed searches
+
+    If a search returns no useful new information about a specific entity or sub-path:
+    - Try at most 2 different phrasings for that same entity or relationship
+    - After 2 failures on the same sub-path, mark it as "data unavailable" and continue to remaining unexplored branches
+    - Never repeat the same search query — always rephrase or move on
+
+    ## Step 7: Search from multiple angles and persist
 
     - Search each person by name to find their family, occupation, and hobbies
-    - For dates of birth (e.g., 0945-06-12): try multiple forms — "0945-06-12", "born 0945", "date of birth 0945-06-12"
-    - If a person's family page returns no siblings or children, try searching their parents to triangulate
-    - After finding some answers, ask: "Are there more branches I haven't explored yet?" Keep going until all branches are covered.
-    - Do NOT stop after finding one answer — only finalize when all relationship-chain branches are exhausted.
+    - Search "children of [name]", "siblings of [name]", "parents of [name]" for direct relationships
+    - Search by occupation or hobby to find all people with that attribute (multiple searches may be needed)
+    - For dates of birth (e.g., 0945-06-12): try multiple forms — "0945-06-12", "born 0945-06-12", "date of birth 0945-06-12"
+    - For derived relationships (cousin, in-law, uncle): search the CONSTITUENT parts, not the derived relationship name
+    - Try alternate phrasings if your first query returns no results
+    - After finding some answers, ask: "Are there more branches I haven't explored yet?" Keep going until all branches are covered
+    - Do NOT stop after finding one answer — only finalize when all relationship-chain branches are exhausted
 
-    ## Step 5: Match the answer type to the question
+    ## Step 8: Match the answer type to the question
 
     - "Who is...?" → return the person's name(s)
     - "What is the occupation/hobby/date of...?" → return the attribute value(s), not names
@@ -60,7 +88,7 @@ class PhantomWikiSignature(dspy.Signature):
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
-        self.retrieve = dspy.Retrieve(k=10)
+        self.retrieve = dspy.Retrieve(k=20)
         self.react = dspy.ReAct(
             signature=PhantomWikiSignature,
             tools=[self.search_wiki],
@@ -68,16 +96,17 @@ class PhantomWikiReAct(dspy.Module):
         )
 
     def search_wiki(self, query: str) -> str:
-        """Search the PhantomWiki knowledge base. Returns relevant passages about people and their relationships, occupations, hobbies, and dates.
+        """Search the PhantomWiki knowledge base. Returns up to 20 relevant passages about people and their relationships, occupations, hobbies, and dates.
 
         Call this tool multiple times with different queries to find ALL relevant entities.
         Effective strategies:
         - Search a person's name to find their family, occupation, and hobbies
         - Search "children of [name]", "siblings of [name]", "parents of [name]" for direct relationships
-        - Search by occupation or hobby to find all people with that attribute (multiple searches may be needed to find everyone)
+        - Search by occupation or hobby to find all people with that attribute (use 2-3 different phrasings to find everyone)
         - For dates of birth, try multiple forms: "0945-06-12", "born 0945-06-12", "date of birth 0945-06-12"
         - For derived relationships (cousin, in-law, uncle): search the CONSTITUENT parts, not the derived relationship name
         - Try alternate phrasings if your first query returns no results
+        - After 2 failed searches for the same entity, move on to other branches
         """
         results = self.retrieve(query)
         return "\n\n".join(results.passages)

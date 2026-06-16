@@ -1,6 +1,7 @@
 import dspy
 import json
 import os
+import random
 import re
 
 _date_index_cache = None
@@ -313,10 +314,28 @@ class PhantomWikiReAct(dspy.Module):
                 result = self.react(question=question)
                 return dspy.Prediction(answer=result.answer)
 
+            # Deduplicate Phase 1 output (order-preserving)
+            seen = set()
+            deduped = []
+            for e in entities:
+                if e not in seen:
+                    seen.add(e)
+                    deduped.append(e)
+            entities = deduped
+
+            # Random sampling instead of sequential top-N to avoid ColBERT rank bias.
+            # ColBERT may rank corpus-only entities higher than Prolog ground-truth entities,
+            # so sequential entities[:20] systematically misses Prolog entities ranked below position 20.
+            # Random sampling gives all entities a proportional chance of selection.
+            cap = 20
+            if len(entities) > cap:
+                rng = random.Random(hash(question))
+                entities = rng.sample(entities, cap)
+
             counts = []
             # Call count_computer once per pivot entity — guarantees per-entity counting
             # eliminates the 'enumerate-then-collapse' failure mode
-            for entity in entities[:20]:  # cap at 20 to prevent runaway
+            for entity in entities:
                 try:
                     phase2 = self.count_computer(question=question, pivot_entity=entity)
                     c = phase2.count if phase2.count else '0'

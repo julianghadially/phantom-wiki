@@ -1,4 +1,9 @@
+import re as _re
+
 import dspy
+
+# Matches a date like 0945-06-12 anywhere in a search query string
+_DOB_PATTERN = _re.compile(r'\b(\d{4})-(\d{2})-(\d{2})\b')
 
 
 class PhantomWikiSignature(dspy.Signature):
@@ -14,7 +19,8 @@ class PhantomWikiSignature(dspy.Signature):
     → (a) find person X, (b) find ALL grandchildren of X (search each of their parents), (c) return ALL their occupations.
 
     DIRECTION RULE: Ancestor lookups (great-grandfather, grandparent, parent OF X) require going UP the family tree from X. Descendant lookups (great-grandchild, grandchild, child OF X) require going DOWN. Never confuse these directions.
-    GENERATION DEPTH: "grand-" = 2 hops (grandparent = 2 up, grandchild = 2 down); "great-grand-" = 3 hops. Count "great-" prefixes carefully — do not stop one generation short.
+    GENERATION DEPTH: "grand-" = 2 hops; "great-grand-" = 3 hops; "great-great-grand-" = 4 hops. Example: "great-grandparent of X" → (1) find X's parents (1 up), (2) find THEIR parents = X's grandparents (2 up), (3) find THEIR parents = X's great-grandparents (3 up). Do not stop at step 2 for a great-grandparent question.
+    ANCESTOR BRANCH: After identifying the target ancestor (e.g., the great-grandfather "Hilton Gall"), immediately search for that ancestor by name to find ALL their children — you have only seen the one branch leading back to X; there are other branches you have not yet visited.
 
     ## Step 2: When multiple entities match, enumerate each — NEVER sum or aggregate
 
@@ -67,6 +73,7 @@ class PhantomWikiSignature(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=20)
+        self.retrieve_k30 = dspy.Retrieve(k=30)  # higher-k retriever for DOB queries
         self.react = dspy.ReAct(
             signature=PhantomWikiSignature,
             tools=[self.search_wiki],
@@ -74,7 +81,7 @@ class PhantomWikiReAct(dspy.Module):
         )
 
     def search_wiki(self, query: str) -> str:
-        """Search the PhantomWiki knowledge base. Returns up to 20 relevant passages about people and their relationships, occupations, hobbies, and dates.
+        """Search the PhantomWiki knowledge base. Returns relevant passages about people and their relationships, occupations, hobbies, and dates.
 
         Call this tool multiple times with different queries to find ALL relevant entities.
         Effective strategies:
@@ -85,8 +92,28 @@ class PhantomWikiReAct(dspy.Module):
         - For derived relationships (cousin, in-law, uncle): search the CONSTITUENT parts, not the derived relationship name
         - Try alternate phrasings if your first query returns no results
         """
-        results = self.retrieve(query)
-        return "\n\n".join(results.passages)
+        # Transparent DOB intercept: when the query contains a date (YYYY-MM-DD),
+        # issue multiple phrasings at higher k and filter to exact date matches.
+        dob_match = _DOB_PATTERN.search(query)
+        if dob_match:
+            year, month, day = dob_match.group(1), dob_match.group(2), dob_match.group(3)
+            full_date = f"{year}-{month}-{day}"
+            # Search with (a) exact date, (b) year+month (broader), (c) year-only (broadest)
+            # at k=30 each, then filter to only passages containing the exact date string.
+            seen: set = set()
+            all_passages: list = []
+            for phrasing in [full_date, f"{year}-{month}", f"born {year}"]:
+                for passage in self.retrieve_k30(phrasing).passages:
+                    if passage not in seen:
+                        seen.add(passage)
+                        all_passages.append(passage)
+            exact_matches = [p for p in all_passages if full_date in p]
+            if exact_matches:
+                return "\n\n".join(exact_matches[:30])
+            # Fallback: return original query results at k=20
+            return "\n\n".join(self.retrieve(query).passages)
+
+        return "\n\n".join(self.retrieve(query).passages)
 
     def forward(self, question):
         result = self.react(question=question)

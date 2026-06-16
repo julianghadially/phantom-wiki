@@ -19,6 +19,12 @@ class PhantomWikiSignature(dspy.Signature):
     4. After finding some answers, ask yourself: "Could there be more?" Keep searching until all branches of the chain are covered.
 
     5. Do NOT stop after finding one answer. Only finalize your answer list when you are confident you have explored all possibilities.
+
+    ## Match the answer type to the question:
+
+    - "Who is...?" → return the person's name(s)
+    - "What is the occupation/hobby/date of...?" → return the occupation(s), hobby(ies), or date(s) — not names
+    - "How many X does Y have?" → find all X, count them, and return the NUMBER as a string (e.g., ["3"]) — NOT the names of X
     """
 
     question: str = dspy.InputField(desc="A multi-hop question about relationships, occupations, hobbies, or dates in PhantomWiki")

@@ -44,7 +44,7 @@ class PhantomWikiSignature(dspy.Signature):
     ## Step 4: Search exhaustively and persist when stuck
 
     - Search each person by name to find their family, occupation, and hobbies
-    - For dates of birth: use the search_by_dob tool (not search_wiki) with the exact date string. Multiple people often share the same date of birth — treat a DOB-anchored subject exactly like an occupation or hobby: issue multiple searches and process EVERY matched person.
+    - For dates of birth (e.g., 0945-06-12): try multiple forms — "0945-06-12", "born 0945", "date of birth 0945-06-12"
     - When finding all entities with a shared property (hobby X, occupation Y, or date Z): use 2–3 different search phrasings since a single query may miss many matches
     - When you find an intermediate entity, check ALL of its relevant connections before finalizing (e.g., if a grandparent has 4 children, look up all 4; if a person has 3 siblings, check all 3)
     - If a search returns no new information after 2 attempts on the same sub-path, move on to other unexplored branches rather than repeating the same query
@@ -67,10 +67,9 @@ class PhantomWikiSignature(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=20)
-        self.retrieve_dob = dspy.Retrieve(k=30)
         self.react = dspy.ReAct(
             signature=PhantomWikiSignature,
-            tools=[self.search_wiki, self.search_by_dob],
+            tools=[self.search_wiki],
             max_iters=50,
         )
 
@@ -88,37 +87,6 @@ class PhantomWikiReAct(dspy.Module):
         """
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
-
-    def search_by_dob(self, date_str: str) -> str:
-        """Search for all people matching a specific date of birth. Use this tool INSTEAD of
-        search_wiki when the question anchors on a date of birth (e.g., '1050-09-16').
-
-        Tries multiple phrasings with higher recall to maximize the chance of finding ALL
-        people who share that date of birth — multiple people often have the same DOB.
-
-        Args:
-            date_str: The date of birth string, e.g. '1050-09-16'
-        """
-        parts = date_str.strip().split('-')
-        year = parts[0] if parts else date_str
-
-        queries = [
-            date_str,
-            f"date of birth {date_str}",
-            f"born {year}",
-            f"born in {year}",
-        ]
-
-        seen: set = set()
-        passages: list = []
-        for q in queries:
-            results = self.retrieve_dob(q)
-            for p in results.passages:
-                if p not in seen:
-                    seen.add(p)
-                    passages.append(p)
-
-        return "\n\n".join(passages[:60])
 
     def forward(self, question):
         result = self.react(question=question)

@@ -35,7 +35,17 @@ _UNCERTAINTY_EXACT = frozenset({
     'cannot be determined',
     'cannot determine',
     'not determinable',
+    # Additional short uncertainty phrases observed in traces (iter 26)
+    'not computable',
+    'not computable from available records',
+    'not available',
 })
+
+# Maximum character length for valid loop-path answers.
+# All confirmed valid PhantomWiki answers are ≤ 40 chars (longest: "geographical information systems officer").
+# Long uncertainty sentences (typically 50–200+ chars) are caught by this threshold.
+# Applied ONLY in the multi-entity loop path — NOT on the main ReAct path.
+_MAX_LOOP_ANSWER_LEN = 50
 
 
 class PhantomWikiSignature(dspy.Signature):
@@ -250,10 +260,16 @@ class PhantomWikiReAct(dspy.Module):
                         if sub_result.answer:
                             for ans in sub_result.answer:
                                 if ans and ans.strip():
+                                    clean = ans.strip()
+                                    clean_lower = clean.lower()
                                     # Filter uncertainty tokens (loop path only, NOT main ReAct)
-                                    # Exact-match only — no prefix-match (confirmed harmful in iters 17/18)
-                                    if ans.strip().lower() not in _UNCERTAINTY_EXACT:
-                                        all_answers.append(ans.strip())
+                                    # Two-layer filter:
+                                    # 1. Exact-match frozenset for short uncertainty tokens
+                                    # 2. Length filter (≤50 chars) — all valid PhantomWiki answers are
+                                    #    ≤40 chars; longer strings are always uncertainty explanations.
+                                    # No prefix-match — confirmed harmful in iterations 17/18.
+                                    if clean_lower not in _UNCERTAINTY_EXACT and len(clean) <= _MAX_LOOP_ANSWER_LEN:
+                                        all_answers.append(clean)
                     except Exception:
                         pass  # Skip failed sub-questions gracefully
 

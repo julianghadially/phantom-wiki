@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 import threading
 import warnings
@@ -26,14 +27,37 @@ def _quiet_del(self):
         pass
 asyncio.BaseEventLoop.__del__ = _quiet_del
 
-# reasoning_effort="low" enables reasoning on gpt-5.4-nano (off by default);
-# kept in sync with src/program/phantomwiki_pipeline.py, which is the LM
-# actually used during CodeEvolver optimization.
-dspy.configure(lm=dspy.LM("openai/gpt-5.4-nano", cache=False, reasoning_effort="low"))
+# DeepSeek-V4-Flash via GMI Cloud (OpenAI-compatible route), reasoning_effort="high".
+# Kept in sync with src/program/phantomwiki_pipeline.py, which is the LM actually
+# used during CodeEvolver optimization.
+dspy.configure(lm=dspy.LM(
+    "openai/deepseek-ai/DeepSeek-V4-Flash",
+    api_base="https://api.gmi-serving.com/v1",
+    api_key=os.environ["GMI_API_KEY"],
+    cache=False,
+    reasoning_effort="high",
+    allowed_openai_params=["reasoning_effort"],
+))
+
+# MLflow tracing: captures every DSPy/LM call (including the outgoing request
+# params) so you can confirm reasoning_effort="high" is actually being sent.
+# On by default; disable with MLFLOW_TRACING=0. View traces with `mlflow ui`
+# (defaults to ./mlruns) and open the experiment's Traces tab.
+if os.environ.get("MLFLOW_TRACING", "1") != "0":
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
+        mlflow.set_experiment(os.environ.get("MLFLOW_EXPERIMENT", "phantomwiki"))
+        mlflow.dspy.autolog()
+        print("[MLflow] tracing enabled -> "
+              f"{mlflow.get_tracking_uri()} (experiment: {os.environ.get('MLFLOW_EXPERIMENT', 'phantomwiki')})")
+    except Exception as e:  # pragma: no cover - tracing must never break eval
+        print(f"[MLflow] tracing disabled ({e})", file=sys.stderr)
 
 selected_pipeline = PhantomWikiReActPipeline
 
-NUM_THREADS = 4
+# Eval concurrency. Override for a speed test with NUM_THREADS=25 python -m src.evaluate ...
+NUM_THREADS = int(os.environ.get("NUM_THREADS", "4"))
 
 
 def log_prompts(pipeline):

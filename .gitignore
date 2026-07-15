@@ -12,3 +12,4 @@ __pycache__/
 .codeevolver/
 */__pycache__/*
 mlruns/
+.opencode/

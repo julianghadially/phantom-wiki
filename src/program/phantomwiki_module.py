@@ -50,6 +50,18 @@ AMBIGUITY — MOST QUESTIONS ARE AMBIGUOUS (this drives almost all of the score)
 - 'Who ...' / list questions: union all matching entities and deduplicate by full name.
 - DEAD-END FALL-THROUGH (critical): if ONE matching individual's chain dead-ends (e.g. has no sibling, child, or nephew), that does NOT make the whole answer empty — there are almost certainly OTHER matching individuals whose chains DO yield answers. Keep enumerating the remaining confirmed anchors and aggregate whatever each produces. Only after exhausting ALL confirmed matching individuals may you consider the answer empty, and even then include any partial candidates you found earlier.
 
+ATTRIBUTE-SELECTOR ENUMERATION PROTOCOL (the retriever caps at ~64 results, and semantic ranking SCATTERS exact matches — a single bare query usually surfaces only 0-2 of the true matches, so you would wrongly conclude "no match" and score 0):
+- For ANY selector 'the person whose date of birth is <DATE>': call search_wiki_many (k=64, the high-recall variant) with SEVERAL DIFFERENT phrasings of the SAME value and UNION the CONFIRMED matches:
+    1. the bare date: "<DATE>"
+    2. "The date of birth of <DATE>"
+    3. "born on <DATE>"
+    4. "<DATE> date of birth"
+  Different phrasings return DIFFERENT top-64 sets, so each surfaces different exact-match people. Combine ALL of them. For EACH returned passage, ONLY count it as a matching anchor if its Attributes line literally reads "The date of birth of <Name> is <DATE>" EXACTLY matching the question date. Repeating the SAME phrasing returns the SAME results — never re-issue an identical query; instead use a new phrasing.
+- For 'the person whose hobby is <VALUE>': run multi-phrasing union against the high-recall retrieve — "<VALUE>", "hobby of <VALUE>", "The hobby of X is <VALUE>", "<VALUE> hobby" — confirming each candidate's hobby line matches exactly. Hobbies are multi-word phrases (e.g. "stone collecting", "video gaming"), so match the FULL phrase, not just a keyword.
+- For 'the person whose occupation is <VALUE>': same — "<VALUE>", "occupation of <VALUE>", "The occupation of X is <VALUE>", "<VALUE> occupation".
+- ALWAYS write a running list of the CONFIRMED matching individuals (full names) as you go, and tick off which phrasings you have already tried so you never waste an iteration re-running one.
+- CRITICAL — NEVER return [] when you have confirmed AT LEAST ONE matching individual. The retriever caps at ~64 results so you will often be unable to find EVERY matching person; that is EXPECTED. Output the answer derived from EVERY confirmed individual even if you believe more exist — partial recall is heavily rewarded (e.g. finding 4 of 7 correct occupations scores ~0.57, while returning [] scores 0.00). Exhaust all your phrasings FIRST, aggregate everything confirmed, then finish; do not stop early just because one phrasing returned few matches.
+
 OUTPUT TYPE RULES (critical to avoid a zero score):
 - 'How many ...' questions -> answer entries are COUNTS as digit strings (e.g. "0", "2"). Never answer a how-many question with a person's name. For each distinct matching individual report its own count.
 - 'Who ...' / 'list ...' questions -> answer entries are FULL people's names exactly as printed in the article title ('# <Full Name>').
@@ -71,15 +83,21 @@ FINAL ANSWER:
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=30)
+        self.retrieve_many = dspy.Retrieve(k=64)
         self.react = dspy.ReAct(
             signature=dspy.Signature("question -> answer: list[str]", INSTRUCTIONS),
-            tools=[self.search_wiki],
+            tools=[self.search_wiki, self.search_wiki_many],
             max_iters=50,
         )
 
     def search_wiki(self, query: str) -> str:
-        """Search the PhantomWiki corpus by a person's full name, a relation phrase, an attribute value (e.g. 'microbiology'), or a date string (e.g. '0918-01-17'). Returns matching passages (each begins with '# <Full Name>')."""
+        """Search the PhantomWiki corpus by a person's full name, a relation phrase, an attribute value (e.g. 'microbiology'), or a date string (e.g. '0918-01-17'). Returns up to ~30 matching passages (each begins with '# <Full Name>'). Use this for DIRECT reads of a named person's article (parents/children/siblings/spouse/attributes) and for friends/relations of a single named person."""
         results = self.retrieve(query)
+        return "\n\n".join(results.passages)
+
+    def search_wiki_many(self, query: str) -> str:
+        """High-recall variant (~64 passages) of search_wiki. Use it to ENUMERATE the multiple different people behind an AMBIGUOUS attribute selector (a date of birth like '0946-07-14', a hobby value, or an occupation value), and for reverse-lookup sweeps (e.g. scanning who names a given person). Because the ColBERT server caps results and semantic ranking scatters exact matches, you must call this with SEVERAL DIFFERENT phrasings of the SAME value and UNION the confirmed matches (see ATTRIBUTE-SELECTOR ENUMERATION PROTOCOL)."""
+        results = self.retrieve_many(query)
         return "\n\n".join(results.passages)
 
     def forward(self, question):

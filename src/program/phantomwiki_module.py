@@ -19,10 +19,12 @@ RELATION DEFINITIONS (standard genealogy; the question uses these EXACT terms):
 - Nth-cousin / great-X relations compose the above rules recursively; chain as many mother/father and reverse child steps as the question requires.
 
 AMBIGUITY — MOST QUESTIONS ARE AMBIGUOUS (this drives almost all of the score):
-- The described subject often matches MULTIPLE different people. Examples: 'the person whose hobby is microbiology', 'the nephew of the grandson of the person whose date of birth is 0918-01-17'. Each may identify several distinct individuals.
+- The described subject almost ALWAYS matches MULTIPLE different people. Examples: 'the person whose hobby is microbiology', 'the nephew of the grandson of the person whose date of birth is 0918-01-17'. Each may identify SEVERAL distinct individuals. Assume the subject is plural until proven otherwise; a single match is the exception, not the rule.
+- Attribute / date selectors are loose: searching a bare value (a date like '0918-01-17', a hobby, an occupation) via the retriever returns passages ranked by RELEVANCE, not by exact match — MANY returned passages will NOT actually contain that exact value. You MUST open and read each candidate passage and CONFIRM the attribute equals the question value before counting it as a matching anchor. Conversely, the TRUE matches may be scattered across multiple pages of results, so do NOT stop at the first relevant-looking passage; issue the same value query again as needed to scan more candidates, and keep a written list of every CONFIRMED matching individual.
 - The COMPLETE correct answer is the UNION over EVERY matching individual. Find ALL of them, not just the first.
 - 'How many X does [subject] have?': the subject may be several people, each with its own count. You MUST enumerate every matching individual, compute that count for each, and report EVERY distinct count as a SEPARATE answer string (e.g. ["1","3","12"], not a single number).
 - 'Who ...' / list questions: union all matching entities and deduplicate by full name.
+- DEAD-END FALL-THROUGH (critical): if ONE matching individual's chain dead-ends (e.g. they have no sibling, no child, no nephew), that does NOT make the whole answer empty — there are almost certainly OTHER matching individuals whose chains DO yield answers. Keep enumerating the remaining confirmed anchors and aggregate whatever each produces. Only after you have exhausted ALL confirmed matching individuals may you consider returning empty (and even then, include any partial candidates you found earlier).
 
 OUTPUT TYPE RULES (critical to avoid zero score):
 - 'How many ...' questions -> answer entries are COUNTS, written as digit strings (e.g. "0", "2"). Never answer a how-many question with a person's name.
@@ -38,14 +40,14 @@ STRATEGY:
 
 FINAL ANSWER:
 - Deduplicate case-insensitively. Output a flat list of strings.
-- NEVER return an empty list unless you are certain no answer exists. If you foundANY candidate at all (even partial), include it — partial credit beats a guaranteed zero.
+- NEVER return an empty list unless you are certain no answer exists. If you found ANY candidate at all (even partial), include it — partial credit beats a guaranteed zero.
 - For how-many questions, list every distinct count you observed across matching individuals.
 - Use the exact full name / exact attribute wording from retrieved articles; do not invent."""
 
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
-        self.retrieve = dspy.Retrieve(k=10)
+        self.retrieve = dspy.Retrieve(k=25)
         self.react = dspy.ReAct(
             signature=dspy.Signature("question -> answer: list[str]", INSTRUCTIONS),
             tools=[self.search_wiki],

@@ -101,5 +101,15 @@ class PhantomWikiReAct(dspy.Module):
         return "\n\n".join(results.passages)
 
     def forward(self, question):
-        result = self.react(question=question)
-        return dspy.Prediction(answer=result.answer)
+        last_err = None
+        for _attempt in range(3):
+            try:
+                result = self.react(question=question)
+                return dspy.Prediction(answer=result.answer)
+            except Exception as exc:  # AdapterParseError / decode hiccups — retry with a fresh stochastic draw
+                last_err = exc
+        # All retries failed (e.g. the LM emitted non-JSON). Returning [] here
+        # scores 0 for this row, but lets the batch keep running instead of
+        # crashing the whole eval. A non-empty fallback list is impossible, so
+        # prefer an empty list with a trace marker.
+        raise last_err

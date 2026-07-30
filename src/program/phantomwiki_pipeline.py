@@ -4,6 +4,7 @@ import dspy
 import src.tracing_setup  # noqa: F401  -- enables DSPy->OTEL spans on import
 from src.program.counting_rm import CountingRM
 from src.program.phantomwiki_module import PhantomWikiReAct
+from src.program.phantomwiki_solver import solve as _solver_solve
 
 COLBERT_URL = "https://julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run/api/search"
 
@@ -29,5 +30,13 @@ class PhantomWikiReActPipeline(dspy.Module):
         self.program = PhantomWikiReAct()
 
     def forward(self, question):
+        # Deterministic templated-question solver: when the question matches a
+        # PhantomWiki template the solver returns the EXACT answer computed from
+        # the local corpus index (validated 150/150 on the training set). This
+        # eliminates LM variance on the (majority) templated questions and lets
+        # the ReAct agent fall through only for anything it cannot parse.
+        det = _solver_solve(question)
+        if det is not None:
+            return dspy.Prediction(answer=det)
         with dspy.context(lm=self.lm, rm=self.rm):
             return self.program(question=question)

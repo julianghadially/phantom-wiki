@@ -558,6 +558,7 @@ for _sing, _pl in [
     ("parent", "parents"), ("child", "children"), ("sibling", "siblings"),
     ("cousin", "cousins"), ("niece", "nieces"), ("nephew", "nephews"),
     ("friend", "friends"), ("aunt", "aunts"), ("uncle", "uncles"),
+    ("husband", "husbands"), ("wife", "wives"), ("spouse", "spouses"),
 ]:
     _ns = _norm(_pl)
     if _ns not in PHRASE_MAP:

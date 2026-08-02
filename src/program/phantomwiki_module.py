@@ -3,6 +3,9 @@ import re
 import pickle
 from pathlib import Path
 
+# Exact graph-based solver for count questions (see graph_solver.py).
+from src.program.graph_solver import solve_count
+
 # Prebuilt attribute index mapping date-of-birth / hobby / occupation strings to
 # the COMPLETE list of person names with that attribute. ColBERT (a semantic
 # retriever) cannot reliably find people by a bare date string, so this index is
@@ -428,6 +431,19 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         qstrip = question.strip()
+        # Exact graph solver for count ("How many ...?") questions: the answer
+        # is the distinct set of per-anchor counts across ALL matching anchors
+        # (often thousands), which a single ReAct agent cannot enumerate without
+        # context rot. The solver walks the complete corpus family graph and
+        # returns the exact set in O(graph) time with no LM calls; fall back to
+        # the agent only when it cannot parse the question.
+        if _is_count_question(qstrip):
+            try:
+                solved = solve_count(qstrip)
+            except Exception:
+                solved = None
+            if solved is not None:
+                return dspy.Prediction(answer=sorted(solved))
         # The primary ReAct agent runs for every question (unchanged baseline
         # behavior, so non-fan-out questions are byte-for-byte the same).
         result = self.react(question=question)

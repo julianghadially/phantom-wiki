@@ -1,4 +1,98 @@
 import dspy
+import re
+
+# Relations whose count is directly readable from a single article's Family /
+# Friends section. Used by the deterministic direct-counter path.
+_DIRECT_RELATIONS = {
+    "friend", "friends",
+    "brother", "brothers", "sister", "sisters", "sibling", "siblings",
+    "son", "sons", "daughter", "daughters", "child", "children",
+    "mother", "mothers", "father", "fathers", "parent", "parents",
+    "husband", "husbands", "wife", "wives",
+}
+
+# Matches "the person whose (occupation|hobby) is <value>" up to the
+# " have" / " has" / "?" terminator that follows it in the question.
+_ANCHOR_RE = re.compile(
+    r"the person whose (occupation|hobby) is (.+?)\s*(?:have|has|\?)", re.IGNORECASE
+)
+
+
+def _as_list(ans):
+    if ans is None:
+        return []
+    if isinstance(ans, list):
+        return [str(x) for x in ans]
+    return [str(ans)]
+
+
+def _dedupe(items):
+    """Case-insensitive dedupe, preserving the first-seen spelling."""
+    seen = set()
+    out = []
+    for it in items:
+        k = str(it).strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(str(it).strip())
+    return out
+
+
+def _is_count_question(q):
+    return re.match(r"\s*how\s+many\b", q, re.IGNORECASE) is not None
+
+
+def _count_relation_from_passage(passage, rel):
+    """Deterministically count a DIRECT base relation from one article passage.
+
+    Returns an integer count. ``rel`` is the lowercase relation name
+    (singular or plural). For composed relations this is not used.
+    """
+    name = passage.split(":")[0].strip()
+    fam_m = re.search(r"## Family(.*?)## Friends", passage, re.S)
+    fri_m = re.search(r"## Friends(.*?)## Attributes", passage, re.S)
+    fam = fam_m.group(1) if fam_m else ""
+    fri = fri_m.group(1) if fri_m else ""
+
+    def cnt(section, word):
+        pat = re.compile(
+            r"The " + word + r"s? of " + re.escape(name) + r" (?:are|is) ([^.]*?)\.",
+            re.IGNORECASE,
+        )
+        mm = pat.search(section)
+        if not mm:
+            return 0
+        names = mm.group(1).strip()
+        if not names:
+            return 0
+        return len([n for n in names.split(",") if n.strip()])
+
+    r = rel.lower()
+    if r in ("friend", "friends"):
+        return cnt(fri, "friend")
+    if r in ("brother", "brothers"):
+        return cnt(fam, "brother")
+    if r in ("sister", "sisters"):
+        return cnt(fam, "sister")
+    if r in ("son", "sons"):
+        return cnt(fam, "son")
+    if r in ("daughter", "daughters"):
+        return cnt(fam, "daughter")
+    if r in ("mother", "mothers"):
+        return cnt(fam, "mother")
+    if r in ("father", "fathers"):
+        return cnt(fam, "father")
+    if r in ("husband", "husbands"):
+        return cnt(fam, "husband")
+    if r in ("wife", "wives"):
+        return cnt(fam, "wife")
+    if r in ("sibling", "siblings"):
+        return cnt(fam, "brother") + cnt(fam, "sister")
+    if r in ("child", "children"):
+        return cnt(fam, "son") + cnt(fam, "daughter")
+    if r in ("parent", "parents"):
+        return cnt(fam, "mother") + cnt(fam, "father")
+    return 0
 
 INSTRUCTIONS = """\
 You answer questions over the PhantomWiki corpus of fictional characters.
@@ -147,6 +241,15 @@ class PhantomWikiReAct(dspy.Module):
             tools=[self.search_wiki, self.search_wiki_all],
             max_iters=60,
         )
+        # Focused per-anchor solver used by the count-set fan-out. It shares the
+        # same tools/instructions as the primary agent but runs on a clean,
+        # single-anchor sub-question so the scratchpad never accumulates across
+        # hundreds of anchors (which causes context rot and early stopping).
+        self.sub_react = dspy.ReAct(
+            signature=PhantomWikiSignature,
+            tools=[self.search_wiki, self.search_wiki_all],
+            max_iters=20,
+        )
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus by a person's full name or by an attribute
@@ -167,6 +270,130 @@ class PhantomWikiReAct(dspy.Module):
         results = self.retrieve_all(query)
         return "\n\n".join(results.passages)
 
+    def _enumerate_anchors(self, attr, value):
+        """Return [(name, passage)] for every article whose `attr` exactly equals
+        `value`, via the exhaustive retriever. attr in {"occupation","hobby"}."""
+        passages = self.retrieve_all(value).passages
+        out = []
+        vlow = value.lower()
+        for p in passages:
+            name = p.split(":")[0].strip()
+            if not name:
+                continue
+            nlow = name.lower()
+            if attr == "occupation":
+                ok = re.search(
+                    r"occupation of " + re.escape(nlow) + r" is " + re.escape(vlow) + r"\.",
+                    p, re.IGNORECASE,
+                )
+            else:  # hobby
+                ok = re.search(
+                    r"hobby of " + re.escape(nlow) + r" is " + re.escape(vlow) + r"\.",
+                    p, re.IGNORECASE,
+                )
+            if ok:
+                out.append((name, p))
+        return out
+
+    def _fanout_counts(self, qstrip, m, attr, value):
+        """Enumerate anchors for an occupation/hobby-anchored count question and
+        return ``(set_of_counts, kind)``, or ``(None, None)`` on failure.
+
+        Three paths, chosen by the per-anchor sub-question's shape:
+          * DIRECT  -- "How many <base rel> does <anchor> have?": count is
+            readable straight from each enumerated passage, so do it
+            deterministically over ALL anchors (no LM, exact).
+          * SHALLOW -- "How many <composed rel> does <anchor> have?" (the
+            counted relation hangs directly off the anchor, e.g. cousins /
+            great-grandfathers): one cheap sub-agent per anchor (cap 12).
+          * DEEP    -- the counted relation hangs off an intermediate relation
+            of the anchor (e.g. "grandparents of the great-grandson of
+            <anchor>"): each sub-agent is a long multi-hop, so cap at 6.
+        """
+        try:
+            anchors = self._enumerate_anchors(attr, value)
+        except Exception:
+            return None, None
+        if not anchors:
+            return None, None
+        # ColBERT is a semantic retriever: for a RARE attribute value it returns
+        # mostly *similar* values (e.g. "microbiology" surfaces "microscopy"), so
+        # the exact-matched anchor set can be tiny (or empty) even though the
+        # gold answer spans many people. A small enumerated set would make the
+        # fan-out WORSE than the primary agent (which keeps searching). Fall back
+        # to the agent when recall looks low; only fan out when enumeration found
+        # a solid set of exact matches.
+        if len(anchors) < 30:
+            return None, None
+
+        phrase_start, phrase_end = m.start(0), m.end(2)
+
+        def per_anchor_q(name):
+            return qstrip[:phrase_start] + name + qstrip[phrase_end:]
+
+        sample_name = anchors[0][0]
+        sample_q = per_anchor_q(sample_name)
+        dm = re.match(r"\s*how many (.+?) does (.+?) have\?\s*$", sample_q, re.IGNORECASE)
+        if not dm:
+            return None, None
+        rel = dm.group(1).strip().lower()
+        entity = dm.group(2).strip().lower()
+        entity_is_anchor = entity == sample_name.lower()
+
+        values = set()
+        if entity_is_anchor and rel in _DIRECT_RELATIONS:
+            kind = "direct"
+            for _name, passage in anchors:  # all enumerated, deterministic & free
+                try:
+                    values.add(str(_count_relation_from_passage(passage, rel)))
+                except Exception:
+                    pass
+        else:
+            kind = "shallow" if entity_is_anchor else "deep"
+            cap = 12 if entity_is_anchor else 6
+            for name, _passage in anchors[:cap]:
+                try:
+                    sr = self.sub_react(question=per_anchor_q(name))
+                    for a in _as_list(sr.answer):
+                        values.add(str(a).strip())
+                except Exception:
+                    pass
+        return values, kind
+
     def forward(self, question):
+        qstrip = question.strip()
+        # The primary ReAct agent runs for every question (unchanged baseline
+        # behavior, so non-fan-out questions are byte-for-byte the same).
         result = self.react(question=question)
-        return dspy.Prediction(answer=result.answer)
+        agent_ans = _as_list(result.answer)
+        agent_set = {a.strip().lower() for a in agent_ans}
+
+        # Occupation/hobby-anchored COUNT ("How many ... have?") questions are the
+        # one place the single agent reliably underperforms: it processes only
+        # 1-2 of the many matching anchors and returns a tiny count set (context
+        # rot / early stopping across hundreds of anchors). For those, enumerate
+        # the anchors and solve each on a fresh scratchpad, then aggregate the
+        # distinct counts.
+        fanout = None
+        if _is_count_question(qstrip):
+            m = _ANCHOR_RE.search(qstrip)
+            if m:
+                attr = m.group(1).lower()
+                value = m.group(2).strip()
+                if attr in ("occupation", "hobby"):
+                    fanout, _kind = self._fanout_counts(qstrip, m, attr, value)
+
+        if fanout:
+            fan_set = {str(a).strip() for a in fanout}
+            # Subset rule: only adopt the fan-out set when it confirms (is a
+            # superset of) what the agent already verified. If the fan-out missed
+            # counts the agent had, keep the agent -- this protects questions the
+            # agent already answers well (a fan-out that is merely a subset would
+            # otherwise regress them). When the agent is empty or the fan-out is a
+            # strict superset, the fan-out adds recall for anchors the single agent
+            # never reached. The only residual risk is a fan-out *extra* (a wrong
+            # count); for the deterministic DIRECT path there is none.
+            if agent_set.issubset(fan_set):
+                return dspy.Prediction(answer=sorted(fan_set))
+
+        return dspy.Prediction(answer=_dedupe(agent_ans))

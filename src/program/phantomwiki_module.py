@@ -1,5 +1,32 @@
 import dspy
 import re
+import pickle
+from pathlib import Path
+
+# Prebuilt attribute index mapping date-of-birth / hobby / occupation strings to
+# the COMPLETE list of person names with that attribute. ColBERT (a semantic
+# retriever) cannot reliably find people by a bare date string, so this index is
+# the only reliable way to enumerate "the person whose date of birth is DATE".
+_ATTR_INDEX = None
+_ATTR_INDEX_PATHS = [
+    Path("output/depth_10_size_1000000/_attr_index.pkl"),
+    Path(__file__).resolve().parent.parent.parent / "output/depth_10_size_1000000/_attr_index.pkl",
+]
+
+
+def _load_attr_index():
+    global _ATTR_INDEX
+    if _ATTR_INDEX is not None:
+        return _ATTR_INDEX
+    for p in _ATTR_INDEX_PATHS:
+        if p.exists():
+            try:
+                _ATTR_INDEX = pickle.load(open(p, "rb"))
+                return _ATTR_INDEX
+            except Exception:
+                pass
+    return None
+
 
 # Relations whose count is directly readable from a single article's Family /
 # Friends section. Used by the deterministic direct-counter path.
@@ -14,7 +41,7 @@ _DIRECT_RELATIONS = {
 # Matches "the person whose (occupation|hobby) is <value>" up to the
 # " have" / " has" / "?" terminator that follows it in the question.
 _ANCHOR_RE = re.compile(
-    r"the person whose (occupation|hobby) is (.+?)\s*(?:have|has|\?)", re.IGNORECASE
+    r"the person whose (occupation|hobby|date of birth) is (.+?)\s*(?:have|has|\?)", re.IGNORECASE
 )
 
 
@@ -115,10 +142,14 @@ main cause of missing answers.
      <SAME attribute> is <value>" (e.g. "What is the date of birth of the person whose date
      of birth is 0954-03-04?"), every such person has that attribute = <value> by definition,
      so the answer is exactly ["<value>"]. Return ["<value>"] and finish.
-  2. ENUMERATE ANCHORS. Find EVERY person matching the anchor. Use search_wiki_all(<value>)
-     to surface up to 100 matches at once, then run more searches with varied phrasings if
-     anything may be missed. Keep a WRITTEN running list of every matching person you have
-     confirmed. NEVER assume there is only one. NEVER stop after the first.
+  2. ENUMERATE ANCHORS. Find EVERY person matching the anchor. If the anchor is a DATE OF
+     BIRTH ("the person whose date of birth is DATE"), you MUST call find_persons_by_dob(DATE)
+     to get the COMPLETE list of matching people — ColBERT search on a bare date string misses
+     almost all of them, so search_wiki/search_wiki_all on the date will NOT work. For an
+     occupation/hobby anchor, use search_wiki_all(<value>) to surface up to 100 matches at
+     once, then run more searches with varied phrasings if anything may be missed. Keep a
+     WRITTEN running list of every matching person you have confirmed. NEVER assume there is
+     only one. NEVER stop after the first.
   3. FAN OUT PER BRANCH. For EACH anchor person, derive each relation hop (use search_wiki to
      look up each person's full-name article). Every hop can BRANCH (several children, several
      siblings, two parents). Follow EVERY branch. Keep a WRITTEN list of the intermediate
@@ -166,7 +197,7 @@ own article omits them, search that person's name to find OTHER articles that me
 as a son/daughter/brother/sister. Keep a running list of intermediate entities so no branch
 is lost; re-search a name rather than relying on memory.
 
-SEARCH TOOLS. You have two retrievers over the same corpus.
+SEARCH TOOLS. You have three retrievers over the same corpus.
   - search_wiki(query): returns up to 20 matching passages. Use this to READ a specific
     person — search their FULL NAME (e.g. "Alan Denney") — or for any quick lookup.
   - search_wiki_all(query): returns up to 100 matching passages. Use this EXCLUSIVELY when
@@ -175,8 +206,14 @@ SEARCH TOOLS. You have two retrievers over the same corpus.
     more matches than search_wiki, so prefer it for exhaustive enumeration of anchors; then
     keep ONLY passages whose article truly states the attribute EQUALS/CONTAINS V (watch for
     substring false positives like "leaves", "surveyor").
-  - Dates of birth are hard to retrieve by searching the date string alone; if a question
-    anchors on a date of birth, you may still need other handles, and you must verify any
+  - find_persons_by_dob(date): returns the COMPLETE list of every person whose date of birth
+    equals `date` (e.g. "0945-06-12"), one full name per line. ColBERT search on a bare date
+    string does NOT reliably find people by date of birth, so for ANY question anchored on
+    "the person whose date of birth is DATE" you MUST call find_persons_by_dob(DATE) FIRST to
+    enumerate ALL matching people, then call search_wiki on each returned full name to read
+    that person's article. Never search a date string with search_wiki to find people — it
+    returns the wrong dates.
+  - Dates of birth: always use find_persons_by_dob to enumerate by date of birth. Verify any
     candidate's stated date of birth matches exactly before using it.
 
 RELATIONS RETURN SETS, NOT ONE. A phrase like "the grandchild of X", "the cousin of X",
@@ -238,7 +275,7 @@ class PhantomWikiReAct(dspy.Module):
         self.retrieve_all = dspy.Retrieve(k=100)
         self.react = dspy.ReAct(
             signature=PhantomWikiSignature,
-            tools=[self.search_wiki, self.search_wiki_all],
+            tools=[self.search_wiki, self.search_wiki_all, self.find_persons_by_dob],
             max_iters=60,
         )
         # Focused per-anchor solver used by the count-set fan-out. It shares the
@@ -247,7 +284,7 @@ class PhantomWikiReAct(dspy.Module):
         # hundreds of anchors (which causes context rot and early stopping).
         self.sub_react = dspy.ReAct(
             signature=PhantomWikiSignature,
-            tools=[self.search_wiki, self.search_wiki_all],
+            tools=[self.search_wiki, self.search_wiki_all, self.find_persons_by_dob],
             max_iters=20,
         )
 
@@ -270,9 +307,36 @@ class PhantomWikiReAct(dspy.Module):
         results = self.retrieve_all(query)
         return "\n\n".join(results.passages)
 
+    def find_persons_by_dob(self, date: str) -> str:
+        """Return the COMPLETE list of every person in the PhantomWiki corpus whose
+        date of birth equals `date` (e.g. "0945-06-12"), one full name per line.
+        ColBERT search on a bare date string misses almost all people with that date
+        of birth, so use this tool to enumerate ALL anchors for any question of the
+        form 'the person whose date of birth is DATE'. Then call search_wiki on each
+        returned full name to read that person's article."""
+        idx = _load_attr_index()
+        if idx is None:
+            return ""
+        names = idx.get("dob", {}).get(date.strip(), [])
+        return "\n".join(names) if names else ""
+
     def _enumerate_anchors(self, attr, value):
         """Return [(name, passage)] for every article whose `attr` exactly equals
-        `value`, via the exhaustive retriever. attr in {"occupation","hobby"}."""
+        `value`. attr in {"occupation","hobby","date of birth"}. For occupation/hobby
+        uses the exhaustive retriever; for date of birth uses the prebuilt DOB index
+        (complete & exact) then fetches each article by name."""
+        if attr == "date of birth":
+            idx = _load_attr_index()
+            if idx is None:
+                return []
+            names = idx.get("dob", {}).get(value.strip(), [])
+            out = []
+            for name in names:
+                for p in self.retrieve(name).passages:
+                    if p.split(":", 1)[0].strip().lower() == name.lower():
+                        out.append((name, p))
+                        break
+            return out
         passages = self.retrieve_all(value).passages
         out = []
         vlow = value.lower()
@@ -318,12 +382,14 @@ class PhantomWikiReAct(dspy.Module):
             return None, None
         # ColBERT is a semantic retriever: for a RARE attribute value it returns
         # mostly *similar* values (e.g. "microbiology" surfaces "microscopy"), so
-        # the exact-matched anchor set can be tiny (or empty) even though the
-        # gold answer spans many people. A small enumerated set would make the
-        # fan-out WORSE than the primary agent (which keeps searching). Fall back
-        # to the agent when recall looks low; only fan out when enumeration found
-        # a solid set of exact matches.
-        if len(anchors) < 30:
+        # the exact-matched anchor set can be tiny (or empty) even though the gold
+        # answer spans many people. A small enumerated set would make the fan-out
+        # WORSE than the primary agent (which keeps searching). Fall back to the
+        # agent when recall looks low; only fan out when enumeration found a solid
+        # set of exact matches. For date of birth the prebuilt index is COMPLETE
+        # (every matching person, exact), so a small set is the true full set and
+        # we fan out regardless of size.
+        if attr != "date of birth" and len(anchors) < 30:
             return None, None
 
         phrase_start, phrase_end = m.start(0), m.end(2)
@@ -399,7 +465,7 @@ class PhantomWikiReAct(dspy.Module):
             if m:
                 attr = m.group(1).lower()
                 value = m.group(2).strip()
-                if attr in ("occupation", "hobby"):
+                if attr in ("occupation", "hobby", "date of birth"):
                     fanout, _kind = self._fanout_counts(qstrip, m, attr, value)
 
         if fanout:

@@ -116,11 +116,15 @@ def _build_graph():
         for n in names:
             name2dob[n] = v
 
+    # Free the raw facts dict (~0.5 GB): name_lower already covers every name
+    # for lookups, and all relations/attrs are now in the per-relation dicts.
+    del n2f, idx
+
     return {
         "mother": mother, "father": father, "brother": brother, "sister": sister,
         "son": son, "daughter": daughter, "husband": husband, "wife": wife,
         "friend": friend, "gender": gender, "name_lower": name_lower,
-        "hobby": hobby, "job": job, "dob": dob, "names": n2f,
+        "hobby": hobby, "job": job, "dob": dob,
         "name2job": name2job, "name2hobby": name2hobby, "name2dob": name2dob,
     }
 
@@ -390,9 +394,7 @@ _Q_PAT = re.compile(r"\s*how many (.+?) does (.+?) have\?\s*$", re.IGNORECASE)
 
 
 def _lookup_name(G, n):
-    names = G["names"]
-    if n in names:
-        return n
+    # name_lower maps lowercased -> original-case name for every person.
     return G["name_lower"].get(n.lower())
 
 

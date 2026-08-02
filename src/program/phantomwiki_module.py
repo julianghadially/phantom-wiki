@@ -452,8 +452,11 @@ class PhantomWikiReAct(dspy.Module):
             return dspy.Prediction(answer=sorted(solved))
         # The primary ReAct agent runs for every question (unchanged baseline
         # behavior, so non-fan-out questions are byte-for-byte the same).
-        result = self.react(question=question)
-        agent_ans = _as_list(result.answer)
+        try:
+            result = self.react(question=question)
+            agent_ans = _as_list(result.answer)
+        except Exception:
+            agent_ans = []
 
         # The ReAct agent is nondeterministic and occasionally returns an EMPTY
         # answer set on questions it can in fact solve (a 1.0 -> 0.0 flip between

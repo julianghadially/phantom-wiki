@@ -223,6 +223,24 @@ def _make_resolvers(G):
     def great_grandchildren(x):
         return _union(children(g) for g in grandchildren(x))
 
+    def great_great_grandparents(x):
+        return _union(parents(g) for g in great_grandparents(x))
+
+    def great_great_grandchildren(x):
+        return _union(children(g) for g in great_grandchildren(x))
+
+    def third_uncles(x):
+        return _union(brothers(g) for g in great_great_grandparents(x))
+
+    def third_aunts(x):
+        return _union(sisters(g) for g in great_great_grandparents(x))
+
+    def great_great_uncles(x):
+        return _union(brothers(g) for g in great_grandparents(x))
+
+    def great_great_aunts(x):
+        return _union(sisters(g) for g in great_grandparents(x))
+
     def female_of(setfn):
         def f(x):
             return {y for y in setfn(x) if is_female(y)}
@@ -320,6 +338,16 @@ def _make_resolvers(G):
         "great_grandchild": great_grandchildren, "great_grandchildren": great_grandchildren,
         "great_grandson": male_of(great_grandchildren), "great_grandsons": male_of(great_grandchildren),
         "great_granddaughter": female_of(great_grandchildren), "great_granddaughters": female_of(great_grandchildren),
+        "great_great_grandparent": great_great_grandparents, "great_great_grandparents": great_great_grandparents,
+        "great_great_grandmother": female_of(great_great_grandparents), "great_great_grandmothers": female_of(great_great_grandparents),
+        "great_great_grandfather": male_of(great_great_grandparents), "great_great_grandfathers": male_of(great_great_grandparents),
+        "great_great_grandchild": great_great_grandchildren, "great_great_grandchildren": great_great_grandchildren,
+        "great_great_grandson": male_of(great_great_grandchildren), "great_great_grandsons": male_of(great_great_grandchildren),
+        "great_great_granddaughter": female_of(great_great_grandchildren), "great_great_granddaughters": female_of(great_great_grandchildren),
+        "great_great_uncle": great_great_uncles, "great_great_uncles": great_great_uncles,
+        "great_great_aunt": great_great_aunts, "great_great_aunts": great_great_aunts,
+        "third_uncle": third_uncles, "third_uncles": third_uncles,
+        "third_aunt": third_aunts, "third_aunts": third_aunts,
         "uncle": uncles, "uncles": uncles,
         "aunt": aunts, "aunts": aunts,
         "great_uncle": great_uncles, "great_uncles": great_uncles,

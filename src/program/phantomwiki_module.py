@@ -13,23 +13,38 @@ in-law, "second cousin", "great-aunt", "once removed", etc.) — those must be D
 below). To read about person X, search for X's full name.
 
 RELATION DERIVATION. Composed relations are reached by chaining base relations across
-several article lookups. Standard decompositions:
-  - parent(P,C): mother or father of C.      sibling: brother or sister.
-  - uncle/aunt of X = a brother/sister of X's parent.     cousin of X = a child of X's
-    aunt or uncle.     grandparent of X = a parent of X's parent.     great-grandparent =
-    parent of a grandparent (and so on for "great-").     nephew/niece of X = a child of
-    X's sibling.     grandchild of X = a child of X's child.
-  - in-law relations go through a spouse: father-in-law of X = father of X's spouse;
-    sibling-in-law = sibling of X's spouse; child-in-law = child of X's spouse (etc.).
-  - "once removed" = one generation apart (e.g. first cousin once removed = child of a
-    cousin, or cousin of a parent).   "second cousin" = a cousin of a parent (shared
-    great-grandparent).   "second uncle/aunt" = an uncle/aunt of a parent (a sibling of a
-    grandparent).
-  - gendered variants ("female cousin", "male first cousin once removed") add a gender
-    filter on the final result using that person's stated gender.
+several article lookups. Base relation primitives in an article: mother, father, parent
+(=mother or father), brother, sister, sibling (=brother or sister), son, daughter, child
+(=son or daughter), husband, wife, married (=husband or wife), male, female. The EXACT
+derived-relation definitions (X is the subject "of X"; find Y):
+  - grandparent of X = a parent of X's parent.        grandchild of X = X is that person's
+    grandparent, i.e. a child of X's child (go DOWN: find X's children, then their children).
+  - great_grandparent of X = a parent of X's grandparent (3 generations up).
+    great_grandchild of X = a child of X's grandchild (go DOWN via children's children's children).
+  - uncle of X = a BROTHER of X's parent.   aunt of X = a SISTER of X's parent.
+  - great_uncle of X = a BROTHER of X's grandparent.  great_aunt of X = a SISTER of X's grandparent.
+  - second_uncle of X = a BROTHER of X's great-grandparent. second_aunt of X = a SISTER of X's
+    great-grandparent.
+  - cousin of X = a person Y whose parent is a SIBLING of X's parent (X=/=Y).
+  - female_cousin / male_cousin of X = a cousin of X who is female / male.
+  - second cousin of X = a person Y whose parent is a COUSIN of X's parent (X=/=Y).
+    female_second_cousin / male_second_cousin add the gender filter on Y.
+  - first cousin once removed of X = a CHILD of X's cousin. female_first_cousin_once_removed =
+    a DAUGHTER of X's cousin; male_first_cousin_once_removed = a SON of X's cousin.
+  - niece of X = a DAUGHTER of X's sibling.   nephew of X = a SON of X's sibling.
+  - grandson of X = a male grandchild of X (child of X's child, male).
+    granddaughter of X = a female grandchild of X.
+  - mother_in_law of X = the MOTHER of X's spouse.   father_in_law of X = the FATHER of X's spouse.
+  - sister_in_law of X = a SISTER of X's spouse.   brother_in_law of X = a BROTHER of X's spouse.
+  - son_in_law of X = the HUSBAND of X's child.   daughter_in_law of X = the WIFE of X's child.
+Direction matters: "who is the grandparent/uncle/... of Z" goes UP (find Z's ancestors, then
+their siblings/parents); "who is the grandchild/niece/nephew/... of Z" goes DOWN (find Z's
+descendants). "How many X does Z have?" counts the Y satisfying relation X(Z, Y).
 At every hop, look up the person's article, read their base relations, and branch out
-wherever a relation yields several people. Keep a running list of intermediate entities so
-no branch is lost; re-search a name rather than relying on memory.
+wherever a relation yields several people. To find someone's PARENTS or SIBLINGS when their
+own article omits them, search that person's name to find OTHER articles that mention them
+as a son/daughter/brother/sister. Keep a running list of intermediate entities so no branch
+is lost; re-search a name rather than relying on memory.
 
 SEARCH TOOL. search_wiki(query) returns up to 20 matching passages, each prefixed by the
 person's name and containing that person's base relations, friends, and attributes.

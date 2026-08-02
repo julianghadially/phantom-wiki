@@ -101,11 +101,27 @@ def _build_graph():
 
     name_lower = {n.lower(): n for n in n2f}
 
+    # Inverse name -> attribute maps (O(1) lookup for "What is the <attr> of
+    # <person>?" list questions). Built once from the attr dicts.
+    name2job = {}
+    for v, names in job.items():
+        for n in names:
+            name2job[n] = v
+    name2hobby = {}
+    for v, names in hobby.items():
+        for n in names:
+            name2hobby[n] = v
+    name2dob = {}
+    for v, names in dob.items():
+        for n in names:
+            name2dob[n] = v
+
     return {
         "mother": mother, "father": father, "brother": brother, "sister": sister,
         "son": son, "daughter": daughter, "husband": husband, "wife": wife,
         "friend": friend, "gender": gender, "name_lower": name_lower,
         "hobby": hobby, "job": job, "dob": dob, "names": n2f,
+        "name2job": name2job, "name2hobby": name2hobby, "name2dob": name2dob,
     }
 
 
@@ -447,3 +463,108 @@ def solve_count(question):
     for e in current:
         counts.add(str(len(fn1(e))))
     return counts
+
+
+# ---------------------------------------------------------------------------
+# List ("Who is ...?" / "What is the <attr> of ...?") questions
+# ---------------------------------------------------------------------------
+_WHO_RE = re.compile(r"\s*who is the (.+?)\?\s*$", re.IGNORECASE)
+_WHAT_RE = re.compile(
+    r"\s*what is the (occupation|hobby|date of birth|gender) of the (.+?)\?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_entity(entity, G, R):
+    """Parse a relation-chain entity into (chain innermost-first, anchors)."""
+    chain = []
+    am = _ANCHOR_PAT.search(entity)
+    if am:
+        attr = am.group(1).lower()
+        value = am.group(2).strip()
+        chain_text = entity[: am.start()]
+        src = {"occupation": G["job"], "hobby": G["hobby"], "date of birth": G["dob"]}.get(attr)
+        if src is None:
+            return None
+        anchors = list(src.get(value, []))
+    else:
+        parts = re.split(r"\s+of\s+(?:the\s+)?", entity)
+        parts = [p.strip() for p in parts if p.strip()]
+        if not parts:
+            return None
+        name = re.sub(r"^the\s+", "", parts[-1]).strip()
+        resolved = _lookup_name(G, name)
+        anchors = [resolved] if resolved else []
+        chain_text = " of ".join(parts[:-1])
+
+    if chain_text.strip():
+        rels = re.split(r"\s+of\s+(?:the\s+)?", chain_text)
+        rels = [r for r in rels if r.strip()]
+        for r in reversed(rels):
+            c = _canonicalize(r)
+            if c is None:
+                return None
+            chain.append(c)
+    return chain, anchors
+
+
+def solve_list(question):
+    """Return the exact answer set (set[str]) for a "Who is ...?" or
+    "What is the <attr> of ...?" question, or None if it cannot be
+    parsed/resolved."""
+    G = _get_graph()
+    if G is None:
+        return None
+    R = _get_resolvers()
+    if R is None:
+        return None
+    q = question.strip()
+    m = _WHO_RE.match(q)
+    asked = None
+    if m:
+        entity = "the " + m.group(1).strip()
+    else:
+        m = _WHAT_RE.match(q)
+        if m is None:
+            return None
+        asked = m.group(1).lower()
+        entity = "the " + m.group(2).strip()
+    parsed = _parse_entity(entity, G, R)
+    if parsed is None:
+        return None
+    chain, anchors = parsed
+    if not anchors:
+        return None
+    current = set(anchors)
+    for rel in chain:
+        nxt = set()
+        fn = R[rel]
+        for p in current:
+            nxt |= fn(p)
+        current = nxt
+    if asked is None:
+        # "Who is ...?" -> the resolved people themselves.
+        return set(current)
+    # "What is the <attr> of ...?" -> distinct attribute values.
+    vals = set()
+    if asked == "occupation":
+        nm = G["name2job"]
+    elif asked == "hobby":
+        nm = G["name2hobby"]
+    elif asked == "date of birth":
+        nm = G["name2dob"]
+    elif asked == "gender":
+        nm = None
+    else:
+        return None
+    if asked == "gender":
+        for p in current:
+            g = G["gender"].get(p)
+            if g:
+                vals.add(g)
+    else:
+        for p in current:
+            v = nm.get(p)
+            if v is not None:
+                vals.add(v)
+    return vals

@@ -3,8 +3,8 @@ import re
 import pickle
 from pathlib import Path
 
-# Exact graph-based solver for count questions (see graph_solver.py).
-from src.program.graph_solver import solve_count
+# Exact graph-based solvers for count + list questions (see graph_solver.py).
+from src.program.graph_solver import solve_count, solve_list
 
 # Prebuilt attribute index mapping date-of-birth / hobby / occupation strings to
 # the COMPLETE list of person names with that attribute. ColBERT (a semantic
@@ -437,13 +437,19 @@ class PhantomWikiReAct(dspy.Module):
         # context rot. The solver walks the complete corpus family graph and
         # returns the exact set in O(graph) time with no LM calls; fall back to
         # the agent only when it cannot parse the question.
-        if _is_count_question(qstrip):
-            try:
-                solved = solve_count(qstrip)
-            except Exception:
-                solved = None
-            if solved is not None:
-                return dspy.Prediction(answer=sorted(solved))
+        # Exact graph solvers for count ("How many ...?") and list
+        # ("Who is ...?" / "What is the <attr> of ...?") questions. Both
+        # answers are determined by walking the complete corpus family graph,
+        # which a single ReAct agent cannot enumerate exhaustively (count
+        # answers span thousands of anchors; multi-hop chains branch widely).
+        # The solvers return the exact set in O(graph) time with no LM calls;
+        # the agent runs only as a fallback when a question cannot be parsed.
+        try:
+            solved = solve_count(qstrip) if _is_count_question(qstrip) else solve_list(qstrip)
+        except Exception:
+            solved = None
+        if solved is not None:
+            return dspy.Prediction(answer=sorted(solved))
         # The primary ReAct agent runs for every question (unchanged baseline
         # behavior, so non-fan-out questions are byte-for-byte the same).
         result = self.react(question=question)

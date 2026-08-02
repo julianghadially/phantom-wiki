@@ -448,7 +448,7 @@ class PhantomWikiReAct(dspy.Module):
             solved = solve_count(qstrip) if _is_count_question(qstrip) else solve_list(qstrip)
         except Exception:
             solved = None
-        if solved is not None:
+        if solved is not None and len(solved) > 0:
             return dspy.Prediction(answer=sorted(solved))
         # The primary ReAct agent runs for every question (unchanged baseline
         # behavior, so non-fan-out questions are byte-for-byte the same).

@@ -27,6 +27,10 @@ class PhantomWikiReActPipeline(dspy.Module):
             allowed_openai_params=["reasoning_effort"],
         )
         self.program = PhantomWikiReAct()
+        # Pre-warm the corpus graph so the exact solver is ready before any
+        # worker thread starts (avoids a lazy-build race under the thread pool).
+        from src.program.graph_solver import warmup_graph
+        warmup_graph()
 
     def forward(self, question):
         with dspy.context(lm=self.lm, rm=self.rm):

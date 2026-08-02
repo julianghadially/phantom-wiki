@@ -139,6 +139,18 @@ def _get_graph():
     return _GRAPH
 
 
+def warmup_graph():
+    """Eagerly build the corpus graph so it is ready before any worker
+    thread starts.  Safe to call multiple times (no-op after the first
+    build).  Errors are swallowed so a failed warmup never breaks pipeline
+    construction -- the graph is built lazily on first solver call and the
+    solver falls back to the agent if it cannot load."""
+    try:
+        _get_graph()
+    except Exception:
+        pass
+
+
 def _union(sets):
     out = set()
     for s in sets:

@@ -366,6 +366,25 @@ class PhantomWikiReAct(dspy.Module):
         # behavior, so non-fan-out questions are byte-for-byte the same).
         result = self.react(question=question)
         agent_ans = _as_list(result.answer)
+
+        # The ReAct agent is nondeterministic and occasionally returns an EMPTY
+        # answer set on questions it can in fact solve (a 1.0 -> 0.0 flip between
+        # runs is common). That empty failure scores 0 and is the single biggest
+        # source of variance. When the first pass comes back empty, retry once or
+        # twice and keep the first non-empty result. This only ever runs on the
+        # (few) empties, so it is cheap, and the agent is high-precision so a
+        # non-empty retry is trustworthy.
+        if not agent_ans:
+            for _ in range(2):
+                try:
+                    r2 = self.react(question=question)
+                    a2 = _as_list(r2.answer)
+                except Exception:
+                    a2 = []
+                if a2:
+                    agent_ans = a2
+                    break
+
         agent_set = {a.strip().lower() for a in agent_ans}
 
         # Occupation/hobby-anchored COUNT ("How many ... have?") questions are the

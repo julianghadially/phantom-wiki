@@ -1,3 +1,5 @@
+import threading
+
 import dspy
 
 
@@ -40,12 +42,29 @@ class PhantomWikiQASignature(dspy.Signature):
     - Issue multiple, varied queries to surface documents a single query might miss, but
       never repeat the same query expecting different results.
 
+    TRACK PROGRESS WITH THE note TOOL (avoids losing the thread on deep chains):
+    - The note(text) tool appends text to a persistent workspace and returns the FULL
+      workspace back to you, so you can reorient without re-deriving earlier hops.
+    - At the START, call note() with the hop plan: the ordered base hops the chain
+      requires (e.g. "PLAN: anchor=DOB 0917-08-17 -> child -> brother -> hobby"). Count
+      the hops: a derived relation N hops deep needs N base-hop traversals.
+    - After EACH resolved hop, call note() with the entities found there (e.g. "HOP2
+      children of X: A, B, C"). Use the returned workspace to track what is confirmed
+      and which next-hop entities still need to be searched.
+    - Do NOT re-search an anchor or hop you have already resolved -- re-read your
+      workspace instead. Re-searching a resolved hop wastes steps and loses the thread.
+    - Before finishing, call note() and confirm every hop is resolved AND every branch
+      has been followed to its final entity and READ. Never finish with an empty answer
+      if you have already found the final entity: retrieve its article and report its
+      attribute value.
+
     ENUMERATION DISCIPLINE (CRITICAL):
     - Most questions have MULTIPLE correct answers. Recall is scored just as heavily as
       precision, so you must find ALL of them, not just one or a few.
     - At every hop, enumerate EVERY entity that satisfies that hop's relation, then branch
       and follow EACH one through the remaining hops. Do not pick a single branch.
-    - Keep a running, deduplicated set of candidate final answers as you go.
+    - Keep a running, deduplicated set of candidate final answers as you go (record it
+      with note()).
     - Do NOT stop early just because you have found some answers. Continue searching until
       you have traced every branch from the anchor all the way through every hop. Only
       call "finish" once you have systematically covered every hop for every branch and
@@ -73,17 +92,39 @@ class PhantomWikiQASignature(dspy.Signature):
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=7)
+        # Per-thread scratchpad so concurrent eval workers do not clobber each
+        # other's progress notes. Each worker handles one question at a time, so
+        # resetting in forward() is safe and isolates state per question.
+        self._tls = threading.local()
         self.react = dspy.ReAct(
             signature=PhantomWikiQASignature,
-            tools=[self.search_wiki],
+            tools=[self.search_wiki, self.note],
             max_iters=50,
         )
+
+    def _workspace(self):
+        if not hasattr(self._tls, "notes"):
+            self._tls.notes = []
+        return self._tls.notes
 
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns relevant passages."""
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
 
+    def note(self, text: str) -> str:
+        """Record a structured progress note (hop plan, entities found per hop,
+        remaining branches) and get back the FULL workspace so you can reorient.
+        Call this at the start with the hop plan, after each resolved hop, and
+        before finishing. Example: note("HOP2 children of Forest Benner: A, B, C").
+        """
+        ws = self._workspace()
+        ws.append(text)
+        if not ws:
+            return "WORKSPACE is empty."
+        return "WORKSPACE:\n" + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(ws))
+
     def forward(self, question):
+        self._tls.notes = []
         result = self.react(question=question)
         return dspy.Prediction(answer=result.answer)

@@ -3,6 +3,66 @@ import threading
 import dspy
 
 
+class PhantomWikiPlanSignature(dspy.Signature):
+    """You are a planning module. Given a PhantomWiki question, decompose it into an
+    explicit, ordered hop-by-hop plan that a retrieval agent will execute. You CANNOT
+    search the corpus, so do NOT try to answer the question. Only produce the
+    STRUCTURAL plan: the ordered base-relation hops, the hop count, and the answer type.
+
+    PhantomWiki articles list only BASE relations: mother, father, sister, brother,
+    son, daughter, husband, wife, friend; and ATTRIBUTES: date of birth (YYYY-MM-DD),
+    occupation, hobby, gender. Any relation named in the question that is NOT one of
+    these base relations is DERIVED and must be decomposed into base hops.
+
+    GENERATION COUNT — the most common error is MISCOUNTING generations. Be precise:
+    - child of X                  = 1 hop (read X, take sons/daughters)
+    - grandchild of X             = 2 hops (X -> child -> child)
+    - great-grandchild of X       = 3 hops (X -> child -> child -> child)
+    - great-great-grandchild of X = 4 hops
+    - every extra "great-" adds exactly ONE more child-hop
+    - parent of X                 = 1 hop (read X, take mother/father)
+    - grandparent of X             = 2 hops (X -> parent -> parent)
+    - great-grandparent of X       = 3 hops
+    - aunt/uncle of X              = 2 hops (X -> parent -> sibling)
+    - great-aunt/great-uncle of X  = 3 hops (X -> parent -> parent -> sibling)
+    - great-great-aunt/uncle of X  = 4 hops
+    - niece/nephew of X            = 2 hops (X -> sibling -> child)
+    - grandniece/grandnephew of X  = 3 hops
+    - cousin of X                  = 3 hops (X -> parent -> sibling -> child)
+    - second cousin of X           = 5 hops (X -> parent -> parent -> sibling -> child -> child)
+    - "once removed" adds one child-hop; "twice removed" adds two
+    - mother-in-law of X = mother of spouse = 2 hops (X -> spouse -> mother)
+    - father/sister/brother/son/daughter-in-law all go THROUGH the spouse first
+      (X -> spouse -> <relation>), or through X's own relation's spouse.
+
+    HOW TO BUILD THE PLAN:
+    1. Identify the anchor: a named person, OR an attribute value (a date like
+       "0918-01-17", an occupation, a hobby, a gender). If the anchor is an attribute
+       value, the first hop is "search that attribute value and enumerate ALL people
+       whose attribute matches it exactly".
+    2. Decompose every derived relation in the question into the ordered base hops
+       above. Count the hops precisely — "great-grandchild" is 3 child-hops, NOT 2.
+    3. State the answer TYPE:
+       - "Who is/are ..." or "Which ..." -> a SET of full names. Enumerate ALL, branch
+         at every hop, do not stop after finding one.
+       - "How many X does Y have?" -> if Y is a SINGLE anchor, the answer is ONE count
+         digit string (e.g. ["3"]). If Y is itself MULTI-VALUED (the question chains
+         through a relation that yields MULTIPLE Y's, e.g. "the grandchild of the
+         great-grandchild of Z" -> many great-grandchildren -> many grandchildren),
+         compute the count for EACH Y and return the SET of distinct count strings
+         (e.g. ["0","2","3"]).
+       - "What is the <attribute> of ..." -> a single attribute value.
+    4. Flag whether branching/enumeration is needed at each hop (yes for any
+       "who/which/how many" question and any multi-valued-Y count question).
+
+    Keep the plan concise: ordered hops, hop count, answer type, branching flag.
+    This plan is the agent's roadmap — it will traverse the hops in order.
+    """
+
+    question: str = dspy.InputField()
+    plan: str = dspy.OutputField()
+
+
 class PhantomWikiQASignature(dspy.Signature):
     """You answer a multi-hop question over PhantomWiki, a fictional knowledge base of
     people. Each search returns one or more short articles; each article is about ONE
@@ -20,6 +80,19 @@ class PhantomWikiQASignature(dspy.Signature):
     husband, wife, friend. Example: the mother-in-law of X = the mother of X's spouse, so
     first read X's article to find X's husband/wife, then search that spouse's name and
     read the spouse's article to find the spouse's mother.
+
+    FOLLOW THE PRE-COMPUTED PLAN (the `plan` field provided with each question):
+    - A structural hop plan has already been generated for this question. It lists the
+      ordered base hops, the exact hop count, the answer type, and whether branching is
+      needed. Follow it: traverse the hops in the listed order and count generations
+      EXACTLY as the plan states (a "great-grandchild" is 3 child-hops, not 2; a
+      "great-great-grandchild" is 4, not 3).
+    - Respect the answer type the plan specifies: a SET of names (enumerate ALL, branch at
+      every hop), a SINGLE count, or a SET of distinct counts (when the counted entity Y is
+      itself multi-valued, compute the count for EACH Y and return every distinct count).
+    - The plan is a roadmap, not the answer. You must still search the corpus and read
+      articles to resolve each hop. If the plan says the anchor is an attribute value,
+      search that value first and enumerate ALL matching people before proceeding.
 
     HOW TO SEARCH AND TRAVERSE:
     - When you retrieve a person's article, READ it and extract the names/relations that
@@ -86,12 +159,22 @@ class PhantomWikiQASignature(dspy.Signature):
     """
 
     question: str = dspy.InputField()
+    plan: str = dspy.InputField(
+        desc="A pre-computed structural hop plan: the ordered base-relation hops, "
+        "the exact hop count, the answer type, and whether branching is needed. "
+        "Follow it to traverse the chain in the correct order."
+    )
     answer: list[str] = dspy.OutputField()
 
 
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=7)
+        # Pre-loop planner: decomposes the question into an ordered base-hop plan
+        # with the correct generation count and answer type, before the ReAct loop
+        # runs. Targets the dominant hop-counting failure mode (e.g. miscounting
+        # "great-grandchild" as 2 hops instead of 3) without a heavy control overlay.
+        self.planner = dspy.ChainOfThought(PhantomWikiPlanSignature)
         # Per-thread scratchpad so concurrent eval workers do not clobber each
         # other's progress notes. Each worker handles one question at a time, so
         # resetting in forward() is safe and isolates state per question.
@@ -126,5 +209,6 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         self._tls.notes = []
-        result = self.react(question=question)
+        plan = self.planner(question=question).plan
+        result = self.react(question=question, plan=plan)
         return dspy.Prediction(answer=result.answer)

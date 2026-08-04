@@ -197,18 +197,23 @@ class PhantomWikiVerifySignature(dspy.Signature):
 
     COMPLETENESS RULES:
     - "Who/Which" (SET of names): every entity satisfying the COMPLETE chain must be
-      in the answer. Search for any the draft missed; branch at every hop.
-    - "How many" (SINGLE count): confirm every matching entity was enumerated, then
-      return the count as a single digit string (e.g. ["3"]).
-    - Multi-valued-Y count (SET of distinct counts): confirm the count for EACH Y,
-      return every distinct count (e.g. ["0", "2", "3"]).
-    - Keep every entity in the draft unless you can confirm from its article that it
-      does NOT satisfy the full chain (a precision check). Otherwise keep it and ADD
-      any newly found entities.
+      in the answer. Search for any the draft missed; branch at every hop. Remove a
+      draft name ONLY if you confirm from its article that it does NOT satisfy the full
+      chain (a precision check).
+    - "How many" (SINGLE count): re-derive the one correct count by enumerating every
+      matching entity, then return it as a single digit string (e.g. ["3"]). The draft
+      may be wrong, so verify and correct it.
+    - Multi-valued-Y count (SET of distinct counts): counts are DERIVED aggregates,
+      not directly retrievable from any single article, so you CANNOT reliably verify
+      a draft count by lookup. Therefore KEEP every count already in the draft and ONLY
+      ADD newly confirmed counts for branches the draft missed. NEVER remove a draft
+      count -- a count the first agent found is evidence it traced that branch; trust
+      it and focus on finding branches that yield counts the draft is MISSING.
 
     If the draft is already complete, return it unchanged. Return `final_answer` as a
     list of strings: full names exactly as in articles, dates as YYYY-MM-DD, counts as
-    digit strings. Include only entities that satisfy the COMPLETE chain.
+    digit strings. For names include only those satisfying the COMPLETE chain; for
+    multi-valued counts keep every draft count plus any newly confirmed ones.
     """
 
     question: str = dspy.InputField()

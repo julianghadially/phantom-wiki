@@ -20,16 +20,16 @@ class PhantomWikiPlanSignature(dspy.Signature):
     - great-grandchild of X       = 3 hops (X -> child -> child -> child)
     - great-great-grandchild of X = 4 hops
     - every extra "great-" adds exactly ONE more child-hop
-    - parent of X                 = 1 hop (read X, take mother/father)
-    - grandparent of X             = 2 hops (X -> parent -> parent)
-    - great-grandparent of X       = 3 hops
-    - aunt/uncle of X              = 2 hops (X -> parent -> sibling)
-    - great-aunt/great-uncle of X  = 3 hops (X -> parent -> parent -> sibling)
-    - great-great-aunt/uncle of X  = 4 hops
-    - niece/nephew of X            = 2 hops (X -> sibling -> child)
-    - grandniece/grandnephew of X  = 3 hops
-    - cousin of X                  = 3 hops (X -> parent -> sibling -> child)
-    - second cousin of X           = 5 hops (X -> parent -> parent -> sibling -> child -> child)
+    - parent of X                 = 1 hop (read X, check BOTH mother AND father)
+    - grandparent of X            = 2 hops (X -> parent -> parent — 4 paths: MM, MF, FM, FF)
+    - great-grandparent of X      = 3 hops
+    - aunt/uncle of X             = 2 hops (X -> parent -> sibling — check BOTH parents' siblings)
+    - great-aunt/great-uncle of X = 3 hops (X -> parent -> parent -> sibling)
+    - great-great-aunt/uncle of X = 4 hops
+    - niece/nephew of X           = 2 hops (X -> sibling -> child)
+    - grandniece/grandnephew of X = 3 hops
+    - cousin of X                 = 3 hops (X -> parent -> sibling -> child)
+    - second cousin of X          = 5 hops (X -> parent -> parent -> sibling -> child -> child)
     - "once removed" adds one child-hop; "twice removed" adds two
     - mother-in-law of X = mother of spouse = 2 hops (X -> spouse -> mother)
     - father/sister/brother/son/daughter-in-law all go THROUGH the spouse first

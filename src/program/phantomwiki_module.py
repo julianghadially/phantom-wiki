@@ -167,6 +167,63 @@ class PhantomWikiQASignature(dspy.Signature):
     answer: list[str] = dspy.OutputField()
 
 
+class PhantomWikiVerifySignature(dspy.Signature):
+    """You are a VERIFICATION agent for a multi-hop PhantomWiki question. A previous
+    agent already investigated the question and produced a PLAN (ordered base-relation
+    hops + hop count + answer type), a WORKSPACE (its hop-by-hop notes), and a DRAFT
+    ANSWER. PhantomWiki articles list only BASE relations (mother, father, sister,
+    brother, son, daughter, husband, wife, friend) and ATTRIBUTES (date of birth
+    YYYY-MM-DD, occupation, hobby, gender); derived relations (aunt, cousin,
+    grandchild, in-law, etc.) are chains of base relations.
+
+    Your job: VERIFY COMPLETENESS and return the FINAL, COMPLETE answer. The single
+    most common failure is STOPPING EARLY -- the previous agent found SOME matching
+    entities but not ALL of them. Your value is finding what it MISSED, not redoing
+    what it already did.
+
+    PROCEDURE:
+    1. Read the PLAN to learn the ordered hops, hop count, and answer TYPE (a SET of
+       names, a SINGLE count, or a SET of distinct counts when the counted entity Y is
+       itself multi-valued).
+    2. Read the WORKSPACE to see which hops are already resolved. Do NOT redo a
+       resolved hop or re-search an entity already recorded there -- that wastes your
+       limited steps. Re-read the workspace instead.
+    3. Identify GAPS: which next-hop names were found but never searched, which
+       branches at a branching hop were not followed, or whether an attribute anchor
+       was incompletely enumerated.
+    4. SEARCH only for those gaps: retrieve articles for un-searched next-hop names,
+       or re-enumerate an attribute value whose matches were incomplete.
+    5. Use note() to record anything new you find, so the workspace stays current.
+
+    COMPLETENESS RULES:
+    - "Who/Which" (SET of names): every entity satisfying the COMPLETE chain must be
+      in the answer. Search for any the draft missed; branch at every hop.
+    - "How many" (SINGLE count): confirm every matching entity was enumerated, then
+      return the count as a single digit string (e.g. ["3"]).
+    - Multi-valued-Y count (SET of distinct counts): confirm the count for EACH Y,
+      return every distinct count (e.g. ["0", "2", "3"]).
+    - Keep every entity in the draft unless you can confirm from its article that it
+      does NOT satisfy the full chain (a precision check). Otherwise keep it and ADD
+      any newly found entities.
+
+    If the draft is already complete, return it unchanged. Return `final_answer` as a
+    list of strings: full names exactly as in articles, dates as YYYY-MM-DD, counts as
+    digit strings. Include only entities that satisfy the COMPLETE chain.
+    """
+
+    question: str = dspy.InputField()
+    plan: str = dspy.InputField(
+        desc="The pre-computed hop plan from the planner: ordered base hops, hop "
+        "count, answer type, branching flag. Use it as your completeness checklist."
+    )
+    workspace: str = dspy.InputField(
+        desc="The previous agent's accumulated hop-by-hop notes. Re-read it to avoid "
+        "redoing resolved hops."
+    )
+    draft_answer: list[str] = dspy.InputField()
+    final_answer: list[str] = dspy.OutputField()
+
+
 class PhantomWikiReAct(dspy.Module):
     def __init__(self):
         self.retrieve = dspy.Retrieve(k=7)
@@ -179,10 +236,24 @@ class PhantomWikiReAct(dspy.Module):
         # other's progress notes. Each worker handles one question at a time, so
         # resetting in forward() is safe and isolates state per question.
         self._tls = threading.local()
+        # Phase 1: investigation ReAct loop.
         self.react = dspy.ReAct(
             signature=PhantomWikiQASignature,
             tools=[self.search_wiki, self.note],
             max_iters=50,
+        )
+        # Phase 2: a short verification pass seeded with phase 1's workspace +
+        # draft answer and the plan, with a completeness mandate. Targets the
+        # open early-stopping / enumeration-incompleteness failure mode (the
+        # agent often finds SOME answers but not ALL on multi-answer questions)
+        # by giving it a second chance to find missed branches WITHOUT re-deriving
+        # resolved hops. The shared `note` workspace provides continuity between
+        # phases. Kept short (max_iters=15) to bound cost; the verifier is told to
+        # start from the draft and only fill gaps, not restart the investigation.
+        self.verify_react = dspy.ReAct(
+            signature=PhantomWikiVerifySignature,
+            tools=[self.search_wiki, self.note],
+            max_iters=15,
         )
 
     def _workspace(self):
@@ -210,5 +281,20 @@ class PhantomWikiReAct(dspy.Module):
     def forward(self, question):
         self._tls.notes = []
         plan = self.planner(question=question).plan
+        # Phase 1: investigation
         result = self.react(question=question, plan=plan)
-        return dspy.Prediction(answer=result.answer)
+        draft = result.answer
+        # Phase 2: verification & completion, seeded with phase 1's workspace so
+        # the verifier continues the investigation rather than restarting it.
+        ws = self._workspace()
+        workspace_str = (
+            "WORKSPACE:\n" + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(ws))
+            if ws else "(no notes recorded)"
+        )
+        verified = self.verify_react(
+            question=question,
+            plan=plan,
+            workspace=workspace_str,
+            draft_answer=draft,
+        )
+        return dspy.Prediction(answer=verified.final_answer)

@@ -25,15 +25,21 @@ class PhantomWikiPlanSignature(dspy.Signature):
     - great-grandparent of X      = 3 hops
     - aunt/uncle of X             = 2 hops (X -> parent -> sibling — check BOTH parents' siblings)
     - great-aunt/great-uncle of X = 3 hops (X -> parent -> parent -> sibling)
-    - great-great-aunt/uncle of X = 4 hops
+    - second aunt of X   = 4 hops (X -> parent -> parent -> parent -> sister)
+      (the sister of X's great-grandparent; "second" is a RELATION NAME, not an
+      ordinal — do NOT interpret it as "the 2nd aunt by age")
+    - second uncle of X  = 4 hops (X -> parent -> parent -> parent -> brother)
     - niece/nephew of X           = 2 hops (X -> sibling -> child)
     - grandniece/grandnephew of X = 3 hops
     - cousin of X                 = 3 hops (X -> parent -> sibling -> child)
     - second cousin of X          = 5 hops (X -> parent -> parent -> sibling -> child -> child)
     - "once removed" adds one child-hop; "twice removed" adds two
     - mother-in-law of X = mother of spouse = 2 hops (X -> spouse -> mother)
-    - father/sister/brother/son/daughter-in-law all go THROUGH the spouse first
-      (X -> spouse -> <relation>), or through X's own relation's spouse.
+    - father-in-law of X = father of spouse = 2 hops (X -> spouse -> father)
+    - brother-in-law of X = brother of spouse = 2 hops (X -> spouse -> brother)
+    - sister-in-law of X = sister of spouse = 2 hops (X -> spouse -> sister)
+    - son-in-law of X = husband of X's child = 2 hops (X -> child -> husband)
+    - daughter-in-law of X = wife of X's child = 2 hops (X -> child -> wife)
 
     HOW TO BUILD THE PLAN:
     1. Identify the anchor: a named person, OR an attribute value (a date like

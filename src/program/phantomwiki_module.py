@@ -420,12 +420,11 @@ class PhantomWikiReAct(dspy.Module):
         """Search the PhantomWiki corpus. Returns relevant passages."""
         norm = _normalize_query(query)
         cache = self._search_cache()
-        if norm in cache:
+        if getattr(self._tls, "dedup_enabled", False) and norm in cache:
             return (
-                f"[CACHED — already searched '{norm}'. The article with family "
-                f"relations is below. If you already noted this person's family, "
-                f"search a DIFFERENT person; otherwise re-read below to verify.]\n\n"
-                + cache[norm]
+                f"[CACHED — already searched '{norm}'. The article with all family "
+                f"relations is in the results above. Search a DIFFERENT person next."
+                f"]\n\n" + cache[norm]
             )
         results = self.retrieve(query)
         passages = "\n\n".join(results.passages)
@@ -526,9 +525,14 @@ class PhantomWikiReAct(dspy.Module):
         self._tls.notes = []
         self._tls.search_cache = {}
         plan = self.planner(question=question).plan
-        # Phase 1: investigation
+        # Phase 1: investigation (dedup enabled — saves wasted re-searches so
+        # the agent traces more starting-point chains on count questions)
+        self._tls.dedup_enabled = True
         result = self.react(question=question, plan=plan)
         draft = result.answer
+        # Phase 2: verification (dedup DISABLED — the verifier may need to
+        # re-search a name to re-read its article and verify a chain)
+        self._tls.dedup_enabled = False
         # Phase 2: verification & completion, seeded with phase 1's workspace so
         # the verifier continues the investigation rather than restarting it.
         ws = self._workspace()

@@ -425,23 +425,56 @@ class PhantomWikiReAct(dspy.Module):
                 names = list(self._hobby_index_lower.get(ql, []))
         if not names:
             return f"No exact matches found for '{q}'."
-        # Cap occupations/hobbies (thousands of matches) to keep the context
-        # manageable; dates have at most ~20 people so no cap is needed.
-        cap = 50
         total = len(names)
-        if total > cap:
-            header = (
-                f"Found {total} people matching '{q}' (showing first {cap}):\n\n"
-            )
-            names = names[:cap]
-        else:
+        # For small result sets (≤ 20, e.g. dates with at most ~18 people) return
+        # FULL articles so the agent can extract family relations directly without
+        # additional searches.  For large sets (occupations/hobbies with thousands
+        # of matches) return a COMPACT one-line-per-person summary — full articles
+        # for 50 people would be ~27K chars and overwhelm the agent, causing it to
+        # trace FEWER chains than the k=7 baseline.  The compact form gives the
+        # agent the names to trace with search_wiki while keeping the context small.
+        if total <= 20:
             header = f"Found {total} people matching '{q}':\n\n"
-        articles = []
-        for name in names:
-            facts = self._corpus_idx["name2facts"].get(name, [])
-            if facts:
-                articles.append(_format_article(name, facts))
-        return header + "\n\n---\n\n".join(articles)
+            articles = []
+            for name in names:
+                facts = self._corpus_idx["name2facts"].get(name, [])
+                if facts:
+                    articles.append(_format_article(name, facts))
+            return header + "\n\n---\n\n".join(articles)
+        else:
+            cap = 50
+            header = (
+                f"Found {total} people matching '{q}' (showing first {cap}). "
+                f"Use search_wiki on a person's name to read their full article.\n\n"
+            )
+            lines = []
+            for name in names[:cap]:
+                facts = self._corpus_idx["name2facts"].get(name, [])
+                dob = occ = hob = gen = ""
+                for f in facts:
+                    m = _FACT_RE.match(f.strip())
+                    if not m or m.group(2) != name:
+                        continue
+                    rel, val = m.group(1), m.group(3)
+                    if rel == "dob":
+                        dob = val
+                    elif rel == "job":
+                        occ = val
+                    elif rel == "hobby":
+                        hob = val
+                    elif rel == "gender":
+                        gen = val
+                parts = [name]
+                if dob:
+                    parts.append(f"DOB: {dob}")
+                if occ:
+                    parts.append(f"occupation: {occ}")
+                if hob:
+                    parts.append(f"hobby: {hob}")
+                if gen:
+                    parts.append(f"gender: {gen}")
+                lines.append(f"{len(lines) + 1}. {' — '.join(parts)}")
+            return header + "\n".join(lines)
 
     def note(self, text: str) -> str:
         """Record a structured progress note (hop plan, entities found per hop,

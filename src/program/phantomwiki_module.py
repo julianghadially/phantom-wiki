@@ -22,6 +22,24 @@ import dspy
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _FACT_RE = re.compile(r'(\w+)\("([^"]+)",\s*"([^"]+)"\)\.')
 
+_REL_SUFFIX = re.compile(
+    r"\s+(?:son|daughter|sons|daughters|father|mother|husband|wife|sister|sisters|"
+    r"brother|brothers|child|children|parent|parents|spouse|sibling|siblings|"
+    r"cousin|cousins|niece|nephew|aunt|uncle|grandparent|grandmother|grandfather|"
+    r"grandchild|grandson|granddaughter|family|relatives?)\s+of\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_query(query):
+    """Normalize a search query for dedup: strip quotes and relation suffixes
+    like 'son of', 'daughter of' so that '"Logan Kong" son of' and
+    'Logan Kong' share the same cache entry."""
+    q = query.strip().strip("\"'").strip()
+    q = _REL_SUFFIX.sub("", q).strip()
+    q = q.strip("\"'").strip()
+    return q.lower() if q else query.strip().lower()
+
 _FAMILY_RELATION_TEXT = {
     "mother": "The mother of {name} is {value}.",
     "father": "The father of {name} is {value}.",
@@ -393,10 +411,25 @@ class PhantomWikiReAct(dspy.Module):
             self._tls.notes = []
         return self._tls.notes
 
+    def _search_cache(self):
+        if not hasattr(self._tls, "search_cache"):
+            self._tls.search_cache = {}
+        return self._tls.search_cache
+
     def search_wiki(self, query: str) -> str:
         """Search the PhantomWiki corpus. Returns relevant passages."""
+        norm = _normalize_query(query)
+        cache = self._search_cache()
+        if norm in cache:
+            return (
+                f"[CACHED — already searched '{norm}'. The article with all family "
+                f"relations is in the results above. Search a DIFFERENT person next."
+                f"]\n\n" + cache[norm]
+            )
         results = self.retrieve(query)
-        return "\n\n".join(results.passages)
+        passages = "\n\n".join(results.passages)
+        cache[norm] = passages
+        return passages
 
     def search_exact(self, query: str) -> str:
         """Exact-match lookup for an ATTRIBUTE VALUE (date of birth YYYY-MM-DD,
@@ -490,6 +523,7 @@ class PhantomWikiReAct(dspy.Module):
 
     def forward(self, question):
         self._tls.notes = []
+        self._tls.search_cache = {}
         plan = self.planner(question=question).plan
         # Phase 1: investigation
         result = self.react(question=question, plan=plan)

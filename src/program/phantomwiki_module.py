@@ -1,6 +1,98 @@
+import glob
+import os
+import pickle
+import re
 import threading
 
 import dspy
+
+
+# ---------------------------------------------------------------------------
+# Non-semantic exact-match lookup support
+# ---------------------------------------------------------------------------
+# The ColBERT retriever does semantic (fuzzy) matching which fails to find
+# exact attribute values — dates of birth ("0946-07-14") return ZERO hits, and
+# occupations/hobbies return only the top-k ranked by similarity, missing the
+# vast majority of matching people.  A pre-built inverted index
+# (_corpus_index.pkl) maps attribute values → person names and person names →
+# prolog fact lists, enabling an exact-match retrieval tool that finds ALL
+# people with a given attribute.  See memory iterations 4-15 for the
+# decade-long retrieval cap on date-anchored and attribute-anchored questions.
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_FACT_RE = re.compile(r'(\w+)\("([^"]+)",\s*"([^"]+)"\)\.')
+
+_FAMILY_RELATION_TEXT = {
+    "mother": "The mother of {name} is {value}.",
+    "father": "The father of {name} is {value}.",
+    "sister": "The sister of {name} is {value}.",
+    "brother": "The brother of {name} is {value}.",
+    "son": "The son of {name} is {value}.",
+    "daughter": "The daughter of {name} is {value}.",
+    "husband": "The husband of {name} is {value}.",
+    "wife": "The wife of {name} is {value}.",
+}
+_ATTR_RELATION_TEXT = {
+    "dob": "The date of birth of {name} is {value}.",
+    "job": "The occupation of {name} is {value}.",
+    "hobby": "The hobby of {name} is {value}.",
+    "gender": "The gender of {name} is {value}.",
+}
+_FAMILY_RELS = set(_FAMILY_RELATION_TEXT)
+
+
+def _format_article(name, facts):
+    """Convert a list of prolog fact strings into article-style text matching
+    the ColBERT corpus format (## Family / ## Friends / ## Attributes)."""
+    family_lines = []
+    friend_names = []
+    attr_lines = []
+    for fact in facts:
+        m = _FACT_RE.match(fact.strip())
+        if not m:
+            continue
+        rel, n, val = m.group(1), m.group(2), m.group(3)
+        if n != name:
+            continue
+        if rel in _FAMILY_RELS:
+            family_lines.append(
+                _FAMILY_RELATION_TEXT[rel].format(name=name, value=val)
+            )
+        elif rel == "friend":
+            friend_names.append(val)
+        elif rel in _ATTR_RELATION_TEXT:
+            attr_lines.append(
+                _ATTR_RELATION_TEXT[rel].format(name=name, value=val)
+            )
+    parts = [f"# {name}"]
+    if family_lines:
+        parts.append("\n## Family")
+        parts.extend(family_lines)
+    if friend_names:
+        parts.append("\n## Friends")
+        parts.append(f"The friends of {name} are {', '.join(friend_names)}.")
+    if attr_lines:
+        parts.append("\n## Attributes")
+        parts.extend(attr_lines)
+    return "\n".join(parts)
+
+
+def _load_corpus_index():
+    """Locate and load the pre-built _corpus_index.pkl.  Returns a dict with
+    keys 'dob', 'hobby', 'job' (inverted indices: value → [names]) and
+    'name2facts' (name → [fact strings]), or None if unavailable."""
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(module_dir))
+    candidates = glob.glob(
+        os.path.join(project_root, "output", "*", "_corpus_index.pkl")
+    )
+    if not candidates:
+        return None
+    try:
+        with open(candidates[0], "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
 
 
 class PhantomWikiPlanSignature(dspy.Signature):
@@ -107,10 +199,20 @@ class PhantomWikiQASignature(dspy.Signature):
       spouse, children, parents, and siblings of X are right there in X's article.
     - If the question names a person, first search that person's full name to retrieve
       their article, then read the relevant listed relation to advance one hop.
-    - If the anchor is an attribute ("the person whose occupation is structural engineer"
-      or "the person whose date of birth is 0917-08-17"), search the attribute VALUE
-      itself (e.g. "structural engineer" or "0917-08-17") to retrieve articles of people
-      who have that attribute.
+    TWO SEARCH TOOLS — choose the right one for each hop:
+    - search_wiki(query): SEMANTIC search. Use for NAME searches — pass a person's full
+      name to retrieve their article. Returns the top-ranked passages.
+    - search_exact(query): EXACT-MATCH lookup for ATTRIBUTE VALUES. Use when the anchor
+      (or an intermediate hop) is an attribute value — a date of birth (YYYY-MM-DD like
+      "0917-08-17"), an occupation (like "structural engineer"), or a hobby. Pass ONLY the
+      attribute value as the query (e.g. search_exact("0917-08-17") or
+      search_exact("structural engineer")). Returns the full articles of ALL people in the
+      corpus whose attribute matches exactly — this finds people that semantic search
+      misses (exact dates return zero hits with search_wiki, and occupations/hobbies only
+      return the top few). When the question says "the person whose [attribute] is
+      [value]", call search_exact(value) FIRST.
+    - For NAME hops after the anchor, use search_wiki to retrieve each next-hop person's
+      article by full name, read it, and extract the next-hop entities.
     - Use base relations directly: the CHILDREN of X are the sons/daughters listed in X's
       article; the PARENTS of X are the mother/father in X's article; the SIBLINGS of X
       are the sisters/brothers in X's article; the SPOUSE of X is the husband/wife in X's
@@ -197,8 +299,10 @@ class PhantomWikiVerifySignature(dspy.Signature):
     3. Identify GAPS: which next-hop names were found but never searched, which
        branches at a branching hop were not followed, or whether an attribute anchor
        was incompletely enumerated.
-    4. SEARCH only for those gaps: retrieve articles for un-searched next-hop names,
-       or re-enumerate an attribute value whose matches were incomplete.
+    4. SEARCH only for those gaps: retrieve articles for un-searched next-hop names
+       with search_wiki, or re-enumerate an attribute value whose matches were
+       incomplete using search_exact (which finds ALL people with a given attribute
+       value — dates, occupations, hobbies — that semantic search missed).
     5. Use note() to record anything new you find, so the workspace stays current.
 
     COMPLETENESS RULES:
@@ -247,10 +351,27 @@ class PhantomWikiReAct(dspy.Module):
         # other's progress notes. Each worker handles one question at a time, so
         # resetting in forward() is safe and isolates state per question.
         self._tls = threading.local()
+        # Non-semantic exact-match lookup index: maps attribute values (dates,
+        # occupations, hobbies) to person names and person names to fact lists.
+        # Enables the search_exact tool that finds ALL people with a given
+        # attribute value — fixing the ColBERT retrieval cap on date-anchored
+        # and attribute-anchored questions (the dominant remaining failure class).
+        # Loaded once at init (~1.5s); None if the index file is unavailable.
+        self._corpus_idx = _load_corpus_index()
+        if self._corpus_idx is not None:
+            self._job_index_lower = {
+                k.lower(): v for k, v in self._corpus_idx["job"].items()
+            }
+            self._hobby_index_lower = {
+                k.lower(): v for k, v in self._corpus_idx["hobby"].items()
+            }
+        else:
+            self._job_index_lower = {}
+            self._hobby_index_lower = {}
         # Phase 1: investigation ReAct loop.
         self.react = dspy.ReAct(
             signature=PhantomWikiQASignature,
-            tools=[self.search_wiki, self.note],
+            tools=[self.search_wiki, self.search_exact, self.note],
             max_iters=50,
         )
         # Phase 2: a short verification pass seeded with phase 1's workspace +
@@ -263,7 +384,7 @@ class PhantomWikiReAct(dspy.Module):
         # start from the draft and only fill gaps, not restart the investigation.
         self.verify_react = dspy.ReAct(
             signature=PhantomWikiVerifySignature,
-            tools=[self.search_wiki, self.note],
+            tools=[self.search_wiki, self.search_exact, self.note],
             max_iters=15,
         )
 
@@ -276,6 +397,51 @@ class PhantomWikiReAct(dspy.Module):
         """Search the PhantomWiki corpus. Returns relevant passages."""
         results = self.retrieve(query)
         return "\n\n".join(results.passages)
+
+    def search_exact(self, query: str) -> str:
+        """Exact-match lookup for an ATTRIBUTE VALUE (date of birth YYYY-MM-DD,
+        occupation, or hobby). Returns the full articles of ALL people in the
+        corpus whose attribute matches the query exactly. Use this when the
+        question says "the person whose [attribute] is [value]" — pass ONLY the
+        value (e.g. search_exact("0946-07-14") or search_exact("financial
+        controller")). For names, use search_wiki instead.
+        """
+        if self._corpus_idx is None:
+            return (
+                "Exact-match search unavailable. Use search_wiki with the "
+                "attribute value as the query."
+            )
+        q = query.strip().strip("\"'").strip()
+        names = []
+        is_date = False
+        date_match = _DATE_RE.search(q)
+        if date_match:
+            is_date = True
+            names = list(self._corpus_idx["dob"].get(date_match.group(), []))
+        else:
+            ql = q.lower()
+            names = list(self._job_index_lower.get(ql, []))
+            if not names:
+                names = list(self._hobby_index_lower.get(ql, []))
+        if not names:
+            return f"No exact matches found for '{q}'."
+        # Cap occupations/hobbies (thousands of matches) to keep the context
+        # manageable; dates have at most ~20 people so no cap is needed.
+        cap = 50
+        total = len(names)
+        if total > cap:
+            header = (
+                f"Found {total} people matching '{q}' (showing first {cap}):\n\n"
+            )
+            names = names[:cap]
+        else:
+            header = f"Found {total} people matching '{q}':\n\n"
+        articles = []
+        for name in names:
+            facts = self._corpus_idx["name2facts"].get(name, [])
+            if facts:
+                articles.append(_format_article(name, facts))
+        return header + "\n\n---\n\n".join(articles)
 
     def note(self, text: str) -> str:
         """Record a structured progress note (hop plan, entities found per hop,

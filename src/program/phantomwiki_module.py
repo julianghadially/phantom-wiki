@@ -422,9 +422,10 @@ class PhantomWikiReAct(dspy.Module):
         cache = self._search_cache()
         if norm in cache:
             return (
-                f"[CACHED — already searched '{norm}'. The article with all family "
-                f"relations is in the results above. Search a DIFFERENT person next."
-                f"]\n\n" + cache[norm]
+                f"[CACHED — already searched '{norm}'. The article with family "
+                f"relations is below. If you already noted this person's family, "
+                f"search a DIFFERENT person; otherwise re-read below to verify.]\n\n"
+                + cache[norm]
             )
         results = self.retrieve(query)
         passages = "\n\n".join(results.passages)

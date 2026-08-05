@@ -257,6 +257,22 @@ class PhantomWikiQASignature(dspy.Signature):
       question -- the answer must be a count.
     - If Y is itself multi-valued (several Y's), compute the count for each Y and return
       the SET of distinct counts (e.g. ["0", "2", "3"]).
+    - The search_exact compact summary shows each person's base-relation counts (sons,
+      daughters, sisters, brothers, mother, father, husband, wife). Use these to SKIP
+      people who CANNOT contribute a non-zero count: if the question's chain goes through
+      a base relation R, and a person has 0 of R, they yield 0 — add "0" to the count set
+      WITHOUT searching them, and focus your limited iterations on people who HAVE that
+      relation. Examples:
+      - Granddaughters (chain: person -> children -> daughters): skip people with 0 sons
+        AND 0 daughters.
+      - Brothers-in-law (chain: person -> spouse -> brother): skip people with 0 husband
+        AND 0 wife.
+      - Cousins (chain: person -> parent -> sibling -> child): skip people with 0 mother
+        AND 0 father.
+      - Nieces/nephews (chain: person -> sibling -> child): skip people with 0 sisters
+        AND 0 brothers.
+      Prioritize tracing people with MORE of the relevant base relation first — they are
+      more likely to yield diverse non-zero counts.
 
     ANSWER FORMAT:
     - Return `answer` as a list of strings. Use full names exactly as they appear in
@@ -319,6 +335,11 @@ class PhantomWikiVerifySignature(dspy.Signature):
       ADD newly confirmed counts for branches the draft missed. NEVER remove a draft
       count -- a count the first agent found is evidence it traced that branch; trust
       it and focus on finding branches that yield counts the draft is MISSING.
+    - The search_exact compact summary shows each person's base-relation counts (sons,
+      daughters, sisters, brothers, mother, father, husband, wife). Use these to
+      identify 0-relation people the draft may have missed (add "0" without a search)
+      and to prioritize tracing people with more of the relevant base relation for
+      gap-filling.
 
     If the draft is already complete, return it unchanged. Return `final_answer` as a
     list of strings: full names exactly as in articles, dates as YYYY-MM-DD, counts as
@@ -442,7 +463,7 @@ class PhantomWikiReAct(dspy.Module):
                     articles.append(_format_article(name, facts))
             return header + "\n\n---\n\n".join(articles)
         else:
-            cap = 50
+            cap = 25
             header = (
                 f"Found {total} people matching '{q}' (showing first {cap}). "
                 f"Use search_wiki on a person's name to read their full article.\n\n"
@@ -451,6 +472,8 @@ class PhantomWikiReAct(dspy.Module):
             for name in names[:cap]:
                 facts = self._corpus_idx["name2facts"].get(name, [])
                 dob = occ = hob = gen = ""
+                sons = daughters = sisters = brothers = 0
+                has_mother = has_father = has_husband = has_wife = 0
                 for f in facts:
                     m = _FACT_RE.match(f.strip())
                     if not m or m.group(2) != name:
@@ -464,6 +487,22 @@ class PhantomWikiReAct(dspy.Module):
                         hob = val
                     elif rel == "gender":
                         gen = val
+                    elif rel == "son":
+                        sons += 1
+                    elif rel == "daughter":
+                        daughters += 1
+                    elif rel == "sister":
+                        sisters += 1
+                    elif rel == "brother":
+                        brothers += 1
+                    elif rel == "mother":
+                        has_mother = 1
+                    elif rel == "father":
+                        has_father = 1
+                    elif rel == "husband":
+                        has_husband = 1
+                    elif rel == "wife":
+                        has_wife = 1
                 parts = [name]
                 if dob:
                     parts.append(f"DOB: {dob}")
@@ -473,6 +512,12 @@ class PhantomWikiReAct(dspy.Module):
                     parts.append(f"hobby: {hob}")
                 if gen:
                     parts.append(f"gender: {gen}")
+                parts.append(
+                    f"sons: {sons}, daughters: {daughters}, "
+                    f"sisters: {sisters}, brothers: {brothers}, "
+                    f"mother: {has_mother}, father: {has_father}, "
+                    f"husband: {has_husband}, wife: {has_wife}"
+                )
                 lines.append(f"{len(lines) + 1}. {' — '.join(parts)}")
             return header + "\n".join(lines)
 

@@ -1,5 +1,8 @@
 env
-output
+output/depth_10_size_1000000/articles.json
+output/depth_10_size_1000000/facts.pl
+output/depth_10_size_1000000/questions.json
+output/depth_10_size_1000000/timings.csv
 .DS_Store
 __pycache__/
 src/__pycache__

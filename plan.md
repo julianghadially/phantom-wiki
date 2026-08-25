@@ -1,5 +1,14 @@
 # Plan: PhantomWiki Baseline Programs & Metrics for CodeEvolver
 
+> **Historical design doc — the data layout below is superseded.** It describes
+> train/val splits under `output/depth_10_size_1000000/`, with
+> `phantomwiki_val.json` as the optimization target. What ships now is two files
+> under `data/`: `phantomwiki_trainval_omitsuperlong.json` (228 rows — the whole
+> training pool, train and val merged) and
+> `phantomwiki_test_omitsuperlong.json` (208 rows, held out). See `overview.md`
+> for the current layout. Kept for the metric and baseline-program rationale,
+> which is still accurate.
+
 ## Goal
 
 Create a lightweight evaluation setup for CodeEvolver to optimize PhantomWiki question-answering programs. No dependency on the phantom-wiki evaluation harness — standalone `phantom_wiki_program.py` (the evolvable module), `pipeline.py` (entry point with ColBERT RM), `metric.py`, and a thin `evaluate.py` runner.

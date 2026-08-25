@@ -27,13 +27,26 @@ src/
         ├── program_multihop_rag.py     # Baseline 1: 2-hop chain-of-thought RAG
         └── baseline_pipeline.py        # Pipeline for baseline 1
 
-output/depth_10_size_1000000/
+data/                                   # the splits evaluate.py actually reads
+├── phantomwiki_trainval_omitsuperlong.json   # 228 rows — the training pool
+└── phantomwiki_test_omitsuperlong.json       # 208 rows — HELD OUT
+
+output/depth_10_size_1000000/           # generation artifacts, git-ignored
 ├── articles.json                       # Generated PhantomWiki corpus
+├── facts.pl                            # Prolog fact base
 ├── questions.json                      # All generated questions
-├── phantomwiki_train.json              # Train split
-├── phantomwiki_val.json                # Validation split
-└── phantomwiki_test.json               # Test split
+└── timings.csv
 ```
+
+Note the two directories: `output/` is what `generate.py` produced and is not
+tracked; `data/` holds the evaluation splits and is. Retrieval at run time goes
+to the remote ColBERT endpoint, so `output/` is not needed in order to evaluate.
+
+`phantomwiki_trainval_omitsuperlong.json` is exactly the union of the earlier
+`train_omitsuperlong` + `val_omitsuperlong` splits (113 + 115 rows), which is
+why those two — and the pre-`omitsuperlong` `train`/`val` pair they came from —
+are no longer kept: they duplicated rows already present here. It shares zero
+questions with the test split.
 
 ## Evaluation Pipeline Architecture
 
@@ -62,7 +75,7 @@ The evaluation pipeline has three layers: **evaluate** → **pipeline** → **mo
 
 ### Supporting components
 
-**CountingRM** (`src/programStudyOverview.md: We have run the evaluate.py function and in the print statement for results we are getting a total blank for every row. /counting_rm.py`): A `dspy.Retrieve` subclass that wraps any retrieval model and counts how many times it is called. Used to track retrieval cost in evaluation results.
+**CountingRM** (`src/program/counting_rm.py`): A `dspy.Retrieve` subclass that wraps any retrieval model and counts how many times it is called. Used to track retrieval cost in evaluation results.
 
 **Metric** (`src/metric/metric.py`):
 - `phantomwiki_f1(gold, pred)` — Token-level F1 between predicted and gold answer lists. Handles both single-string and list answers. Used by `evaluate.py`.

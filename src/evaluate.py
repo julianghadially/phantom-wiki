@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import dspy
+from src.program.lm_provider import build_task_lm
 from src.program.phantomwiki_pipeline import PhantomWikiReActPipeline
 from src.program.baseline_rag.baseline_pipeline import BaselineRAGPipeline
 from src.program.baseline_rlm.rlm_pipeline import RLMPipeline
@@ -27,17 +28,10 @@ def _quiet_del(self):
         pass
 asyncio.BaseEventLoop.__del__ = _quiet_del
 
-# DeepSeek-V4-Flash via GMI Cloud (OpenAI-compatible route), reasoning_effort="high".
-# Kept in sync with src/program/phantomwiki_pipeline.py, which is the LM actually
-# used during CodeEvolver optimization.
-dspy.configure(lm=dspy.LM(
-    "openai/deepseek-ai/DeepSeek-V4-Flash",
-    api_base="https://api.gmi-serving.com/v1",
-    api_key=os.environ["GMI_API_KEY"],
-    cache=False,
-    reasoning_effort="high",
-    allowed_openai_params=["reasoning_effort"],
-))
+# DeepSeek-V4-Flash via GMI Cloud, reasoning_effort="high", with the DeepInfra
+# 4xx fallback -- the same LM src/program/phantomwiki_pipeline.py uses during
+# CodeEvolver optimization (shared via src/program/lm_provider.py).
+dspy.configure(lm=build_task_lm(cache=False))
 
 # MLflow tracing: captures every DSPy/LM call (including the outgoing request
 # params) so you can confirm reasoning_effort="high" is actually being sent.

@@ -1,4 +1,5 @@
 env
+.env.local
 output/depth_10_size_1000000/articles.json
 output/depth_10_size_1000000/facts.pl
 output/depth_10_size_1000000/questions.json
@@ -16,3 +17,4 @@ __pycache__/
 */__pycache__/*
 mlruns/
 .opencode/
+output/provider_ab/

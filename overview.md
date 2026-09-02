@@ -14,6 +14,10 @@ The benchmark is resilient against leakage because the facts are entirely fictio
 src/
 ├── __init__.py
 ├── evaluate.py                         # Evaluation harness (entry point)
+├── infra/                              # FIXED infrastructure -- CodeEvolver must not touch
+│   ├── __init__.py
+│   ├── lm_provider.py                  # Task-LM provider routing (see docs/provider_fallback.md)
+│   └── tracing_setup.py                # DSPy -> OpenTelemetry bridge
 ├── metric/
 │   ├── __init__.py                     # Re-exports: normalize, f1_score, phantomwiki_f1, phantomwiki_f1_feedback
 │   └── metric.py                       # F1 scoring + GEPA feedback metric
@@ -68,7 +72,9 @@ The evaluation pipeline has three layers: **evaluate** → **pipeline** → **mo
 - The ColBERT URL: `https://julianghadially--colbert-server-phantom-wiki-colbertserv-75bf93.modal.run/api/search`
 
 ### 3. Program module: `src/program/phantomwiki_module.py`
-- `PhantomWikiReAct` is the core reasoning module — **this is what CodeEvolver evolves**
+- `PhantomWikiReAct` is the core reasoning module — the primary thing CodeEvolver
+  rewrites, though the declared parent module is the *pipeline* (see below), so all
+  of `src/program/` is inside the mutable surface
 - Uses `dspy.ReAct` with a `search_wiki` tool (wraps `dspy.Retrieve`)
 - Signature: `question -> answer: list[str]`
 - `max_iters=50` (max tool-calling iterations), `k=7` (documents per retrieval)
@@ -84,10 +90,40 @@ The evaluation pipeline has three layers: **evaluate** → **pipeline** → **mo
 
 ### Key architectural notes
 - **DSPy framework**: Everything is built on DSPy. Modules are `dspy.Module` subclasses. Retrieval uses `dspy.Retrieve` (resolved from context). LM calls go through DSPy's global LM config.
-- **Separation of pipeline and module**: The pipeline owns infrastructure (retriever, LM config). The module owns reasoning logic. CodeEvolver only modifies the module, not the pipeline or retriever.
+- **Separation of pipeline and module**: The pipeline owns infrastructure (retriever, LM config). The module owns reasoning logic. In practice CodeEvolver's parent module is the *pipeline* class, so both are mutable; only `src/infra/` and `src/metric/` are off-limits.
 - **Remote retrieval**: The ColBERT index is hosted on Modal as a serverless endpoint. The retriever is not local.
 - **Answer format**: Answers are `list[str]` — questions can have multiple correct answers (e.g., "list all siblings of X"). The F1 metric compares answer sets.
 - **Difficulty tracking**: Questions have a `difficulty` field. Evaluation breaks down F1 by difficulty level.
+
+## Task LM
+
+The pinned task model is **DeepSeek-V4-Flash** at `reasoning_effort="high"`, and every
+task LM in the repo comes from `build_task_lm()` in `src/infra/lm_provider.py` — the
+pipeline's own LM and the global one `src/evaluate.py` configures.
+
+That module is a **verbatim copy** of `langProBe/lm_provider.py` from
+LangProBe-CodeEvolver. `docs/provider_fallback.md` is the contract it implements and is
+the place to read about routing, the preference order, and the circuit breaker; do not
+edit the module here. If it needs to change, change it upstream and re-copy, so the two
+stay diff-clean and the benchmarks stay comparable. Only the test file differs, by its
+three import lines.
+
+Three providers serve the same weights and `PROVIDER_PREFERENCE = ("gmi", "deepseek",
+"deepinfra")` ranks them; each provider's cover is the next one down, wrapping. GMI is
+cheapest and leads the order, but its account returns `402 Insufficient balance` on every
+call (2026-09-02), so `DEFAULT_PROVIDER = "deepseek"` pins the primary one step down:
+an unconfigured run is **DeepSeek primary, covered by DeepInfra**. When GMI is funded
+again, setting `DEFAULT_PROVIDER = PROVIDER_PREFERENCE[0]` is the whole fix.
+
+Run-time knobs: `LM_PROVIDER` (who serves), `LM_FALLBACK` (`0` to disarm, or a provider
+name to pick the cover), `LM_BREAKER*`, `LM_MODEL`.
+
+**One caveat worth knowing.** Because covers wrap, DeepInfra's cover is GMI — which is
+dead right now — and the breaker protects the primary, not the cover. This only bites a
+run pinned with `LM_PROVIDER=deepinfra` *and* the divert armed; measurement arms set
+`LM_FALLBACK=0` anyway (see `scripts/provider_ab.py`), and `LM_FALLBACK=deepseek` is the
+escape hatch. It is deliberately not patched locally: a divergent copy is exactly what
+the shared spec exists to prevent.
 
 ## CodeEvolver
 
@@ -100,7 +136,10 @@ This combines several mechanisms:
 - **Sandboxing for security:** Coding agents are a big cyber risk without sandboxing, network policies, etc.
 
 ### CodeEvolver integration points in this repo
-- **Module path**: `src/program/phantomwiki_module.py` — the file CodeEvolver mutates
+- **Program path**: `src.program.phantomwiki_pipeline.PhantomWikiReActPipeline` — the parent
+  module declared in the experiment config, so everything reachable from it (the pipeline,
+  `phantomwiki_module.py`, `counting_rm.py`) is mutable. `src/program/phantomwiki_module.py`
+  is the file it rewrites in practice
 - **Metric path**: `src/metric/metric.py` — provides `phantomwiki_f1_feedback` (with GEPA `ScoreWithFeedback`)
 - **Dataset**: `output/depth_10_size_1000000/` — train/val/test JSON splits
 
